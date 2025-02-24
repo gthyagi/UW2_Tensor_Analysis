@@ -1,0 +1,12 @@
+# Ignore everything
+*
+
+# Except directories (so that Git can search for .py files in them)
+!*/
+
+# Except .py files
+!*.py
+
+# Allow specific files
+!readme.md
+!.gitignore

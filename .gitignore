@@ -10,3 +10,5 @@
 # Allow specific files
 !readme.md
 !.gitignore
+
+.ipynb_checkpoints/

@@ -10,16 +10,86 @@ from matplotlib import pyplot as plt
 from cmcrameri import cm
 from PIL import Image
 from scipy.interpolate import griddata
+import argparse
 
 # +
-# input dir
-input_dir = './'
+# # Create the parser and define arguments with default values.
+# parser = argparse.ArgumentParser(description="Process input directory, slice depth, and velocity file number.")
+# parser.add_argument(
+#     "--input_dir",
+#     type=str,
+#     default="./hany_models/trans/",
+#     help="Path to the input directory (default: './hany_models/trans/')"
+# )
+# parser.add_argument(
+#     "--slice_depth",
+#     type=float,
+#     default=-8.0,
+#     help="Slice depth (default: -8.0)"
+# )
+# parser.add_argument(
+#     "--vel_file_no",
+#     type=int,
+#     default=6,
+#     help="Velocity file number (default: 6)"
+# )
+
+# # Parse the arguments
+# args = parser.parse_args()
+
+# # Assign the parsed values to variables
+# input_dir = args.input_dir
+# slice_depth = args.slice_depth
+# vel_file_no = args.vel_file_no
+
+# # Print the values (for confirmation)
+# print("Input directory:", input_dir)
+# print("Slice depth:", slice_depth)
+# print("Velocity file number:", vel_file_no)
+
+
+parser = argparse.ArgumentParser(
+    description="Process input directory, slice depth, and velocity file number."
+)
+parser.add_argument(
+    "--input_dir",
+    type=str,
+    default="./hany_models/trans/",
+    help="Path to the input directory (default: './hany_models/trans/')"
+)
+parser.add_argument(
+    "--slice_depth",
+    type=float,
+    default=-8.0,
+    help="Slice depth (default: -8.0)"
+)
+parser.add_argument(
+    "--vel_file_no",
+    type=int,
+    default=6,
+    help="Velocity file number (default: 6)"
+)
+
+# Use parse_known_args to ignore any extra arguments provided by Jupyter
+args, unknown = parser.parse_known_args()
+
+input_dir = args.input_dir
+slice_depth = args.slice_depth
+vel_file_no = args.vel_file_no
+
+print("Input directory:", input_dir)
+print("Slice depth:", slice_depth)
+print("Velocity file number:", vel_file_no)
+
+
+# +
+# output dir
+# input_dir = './hany_models/trans/'
+# slice_depth = -8.0
+# vel_file_no = 6
 
 output_dir = input_dir
-
-vel_file_no = 16
-
-compute_eigen_3d = not True
+compute_eigen_3d = False
 
 if compute_eigen_3d:
     analy_space = '3d'
@@ -31,7 +101,7 @@ else:
 nx, ny, nz = 65, 65, 33
 
 # reading mesh data
-with h5py.File('mesh.h5', 'r') as f:
+with h5py.File(f'{input_dir}mesh.h5', 'r') as f:
     mesh_coords = f['vertices'][:]
 
 # Initialize the StructuredGrid
@@ -230,26 +300,25 @@ mesh['style'] = tectonic_style
 # p.show()
 # -
 
-# This creates a plane normal to the z-axis at z = z_value
-z_value = -8.0
-plane = pv.Plane(center=(0, 0, z_value), direction=(0, 0, 1),
+# This creates a plane normal to the z-axis at z = slice_depth
+plane = pv.Plane(center=(0, 0, slice_depth), direction=(0, 0, 1),
                  i_size=1e5, j_size=1e5)
-slice_mesh = mesh.slice(normal="z", origin=(0, 0, z_value))
+slice_mesh = mesh.slice(normal="z", origin=(0, 0, slice_depth))
 
 # +
-p = pv.Plotter()
+# p = pv.Plotter()
 
-p.add_mesh(slice_mesh, scalars="dilatation", cmap=plt.cm.coolwarm.resampled(20), 
-           clim=[-1e-14, 1e-14],)# show_edges=True)
-glyphs_max = slice_mesh.glyph(orient="SHmax", scale=True, factor=2e15)
-p.add_mesh(glyphs_max, color="black")
+# p.add_mesh(slice_mesh, scalars="dilatation", cmap=plt.cm.coolwarm.resampled(20), 
+#            clim=[-1e-14, 1e-14],)# show_edges=True)
+# glyphs_max = slice_mesh.glyph(orient="SHmax", scale=True, factor=2e15)
+# p.add_mesh(glyphs_max, color="black")
 
-glyphs_min = slice_mesh.glyph(orient="SHmin", scale=True, factor=2e15)
-p.add_mesh(glyphs_min, color="red")
+# glyphs_min = slice_mesh.glyph(orient="SHmin", scale=True, factor=2e15)
+# p.add_mesh(glyphs_min, color="red")
 
-p.view_xy()
-p.show_axes()
-p.show()
+# p.view_xy()
+# p.show_axes()
+# p.show()
 
 # +
 x_min, x_max, y_min, y_max, z_min, z_max = slice_mesh.bounds
@@ -274,73 +343,73 @@ masked_mesh = slice_mesh.extract_points(mask, adjacent_cells=True)
 
 # p.show()
 # +
-# Make a coarse grid
-nx, ny, nz = 40, 40, 1
-grid = pv.ImageData()
-grid.dimensions = (nx, ny, nz)
-grid.origin = (x_min, y_min, z_min)
+# # Make a coarse grid
+# nx, ny, nz = 40, 40, 1
+# grid = pv.ImageData()
+# grid.dimensions = (nx, ny, nz)
+# grid.origin = (x_min, y_min, z_min)
 
-dx = (x_max - x_min) / (nx - 1)
-dy = (y_max - y_min) / (ny - 1)
-dz = 1.0  # for 2D slice
-grid.spacing = (dx, dy, dz)
+# dx = (x_max - x_min) / (nx - 1)
+# dy = (y_max - y_min) / (ny - 1)
+# dz = 1.0  # for 2D slice
+# grid.spacing = (dx, dy, dz)
 
-# Resample the slice_mesh onto the coarse grid
-coarse_mesh = grid.sample(masked_mesh)
+# # Resample the slice_mesh onto the coarse grid
+# coarse_mesh = grid.sample(masked_mesh)
 
-# Plot ONLY the coarse mesh
-p = pv.Plotter()
+# # Plot ONLY the coarse mesh
+# p = pv.Plotter()
 
-# p.add_mesh(slice_mesh, scalars="style", opacity=1.0, show_scalar_bar=False,
-#            cmap=cm.broc.resampled(20), clim=[-1, 1], show_edges=False,)
-p.add_mesh(slice_mesh, scalars="dilatation", opacity=1.0, show_scalar_bar=False,
-           cmap=cm.roma_r.resampled(10), clim=[-1e-14, 1e-14], show_edges=False,)
+# # p.add_mesh(slice_mesh, scalars="style", opacity=1.0, show_scalar_bar=False,
+# #            cmap=cm.broc.resampled(20), clim=[-1, 1], show_edges=False,)
+# p.add_mesh(slice_mesh, scalars="dilatation", opacity=1.0, show_scalar_bar=False,
+#            cmap=cm.roma_r.resampled(10), clim=[-1e-14, 1e-14], show_edges=False,)
 
-sbar = p.add_scalar_bar(title="Dilatation", vertical=True, title_font_size=20, 
-                 label_font_size=20, 
-                 width=0.1,        # relative width of the scalar bar
-                 height=0.8,       # relative height of the scalar bar
-                 position_x=0.88,  # x-position (from left) of the scalar bar
-                 position_y=0.1,    # y-position (from bottom) of the scalar bar
-                 n_labels=5
-                 )
+# sbar = p.add_scalar_bar(title="Dilatation", vertical=True, title_font_size=20, 
+#                  label_font_size=20, 
+#                  width=0.1,        # relative width of the scalar bar
+#                  height=0.8,       # relative height of the scalar bar
+#                  position_x=0.88,  # x-position (from left) of the scalar bar
+#                  position_y=0.1,    # y-position (from bottom) of the scalar bar
+#                  n_labels=5
+#                  )
 
-# Create an arrow glyph with no tip
-custom_arrow = pv.Arrow(tip_length=0.0, tip_radius=0.0, shaft_radius=0.025)
-scale = True
-scale_factor = 2e15
+# # Create an arrow glyph with no tip
+# custom_arrow = pv.Arrow(tip_length=0.0, tip_radius=0.0, shaft_radius=0.025)
+# scale = True
+# scale_factor = 2e15
 
-glyphs_max_pos = coarse_mesh.glyph(orient="SHmax", scale=scale, factor=scale_factor, geom=custom_arrow)
-p.add_mesh(glyphs_max_pos, color="blue")
-coarse_mesh["minus_SHmax"] = -np.array(coarse_mesh["SHmax"])
-glyphs_max_neg = coarse_mesh.glyph(orient="minus_SHmax", scale=scale, factor=scale_factor, geom=custom_arrow)
-p.add_mesh(glyphs_max_neg, color="blue")
+# glyphs_max_pos = coarse_mesh.glyph(orient="SHmax", scale=scale, factor=scale_factor, geom=custom_arrow)
+# p.add_mesh(glyphs_max_pos, color="blue")
+# coarse_mesh["minus_SHmax"] = -np.array(coarse_mesh["SHmax"])
+# glyphs_max_neg = coarse_mesh.glyph(orient="minus_SHmax", scale=scale, factor=scale_factor, geom=custom_arrow)
+# p.add_mesh(glyphs_max_neg, color="blue")
 
-glyphs_min_pos = coarse_mesh.glyph(orient="SHmin", scale=scale, factor=scale_factor, geom=custom_arrow)
-p.add_mesh(glyphs_min_pos, color="red")
-coarse_mesh["minus_SHmin"] = -np.array(coarse_mesh["SHmin"])
-glyphs_min_neg = coarse_mesh.glyph(orient="minus_SHmin", scale=scale, factor=scale_factor, geom=custom_arrow)
-p.add_mesh(glyphs_min_neg, color="red")
+# glyphs_min_pos = coarse_mesh.glyph(orient="SHmin", scale=scale, factor=scale_factor, geom=custom_arrow)
+# p.add_mesh(glyphs_min_pos, color="red")
+# coarse_mesh["minus_SHmin"] = -np.array(coarse_mesh["SHmin"])
+# glyphs_min_neg = coarse_mesh.glyph(orient="minus_SHmin", scale=scale, factor=scale_factor, geom=custom_arrow)
+# p.add_mesh(glyphs_min_neg, color="red")
 
-p.show(cpos='xy')
+# p.show(cpos='xy')
 
-p.camera.zoom(1.4)
+# p.camera.zoom(1.4)
 
-# # Save a high-resolution screenshot as a PNG file
-# if compute_eigen_3d:
-#     filename = f'{output_dir}strain_sh_max_min_{vel_file_no}_3d'
-# else:
-#     filename = f'{output_dir}strain_sh_max_min_{vel_file_no}_2d'
+# # # Save a high-resolution screenshot as a PNG file
+# # if compute_eigen_3d:
+# #     filename = f'{output_dir}strain_sh_max_min_{vel_file_no}_3d'
+# # else:
+# #     filename = f'{output_dir}strain_sh_max_min_{vel_file_no}_2d'
     
-# p.screenshot(f'{filename}.png', scale=6)
+# # p.screenshot(f'{filename}.png', scale=6)
 
-# # Convert the PNG to PDF using Pillow
-# im = Image.open(f'{filename}.png')
-# im.save(f'{filename}.pdf', "PDF", resolution=100.0)
+# # # Convert the PNG to PDF using Pillow
+# # im = Image.open(f'{filename}.png')
+# # im.save(f'{filename}.pdf', "PDF", resolution=100.0)
 # +
 # this is background data
-slice_coords = coarse_mesh.points # slice_mesh.points
-slice_scalar = coarse_mesh["dilatation"] # slice_mesh["dilatation"]
+slice_coords = masked_mesh.points # slice_mesh.points
+slice_scalar = masked_mesh["dilatation"] # slice_mesh["dilatation"]
 
 # Define the grid you want
 x_old, y_old = slice_coords[:,0], slice_coords[:,1]
@@ -412,7 +481,8 @@ def plot_scalar_with_shmax_shmin(
     cb_vert_label_xpos=1.1,
     cb_vert_label_ypos=0.5,
     # Optionally supply a separate colormap for colorbar saving
-    colormap=None
+    colormap=None,
+    arrow_type = 'shmax'
 ):
     """
     Plots a filled contour (Z over X, Y) with overlaid quiver arrows
@@ -486,27 +556,38 @@ def plot_scalar_with_shmax_shmin(
         vmax=vmax
     )
 
-    # Plot quiver arrows for SHmax (blue) and SHmin (red)
-    ax.quiver(
-        X_c, Y_c,
-        SHmax_c[0], SHmax_c[1],
-        color="blue", scale=scale, headwidth=1, headlength=0
-    )
-    ax.quiver(
-        X_c, Y_c,
-        -SHmax_c[0], -SHmax_c[1],
-        color="blue", scale=scale, headwidth=1, headlength=0
-    )
-    ax.quiver(
-        X_c, Y_c,
-        SHmin_c[0], SHmin_c[1],
-        color="red", scale=scale, headwidth=1, headlength=0
-    )
-    ax.quiver(
-        X_c, Y_c,
-        -SHmin_c[0], -SHmin_c[1],
-        color="red", scale=scale, headwidth=1, headlength=0
-    )
+    if arrow_type=='shmax':
+        # Plot quiver arrows for SHmax (blue) and SHmin (red)
+        ax.quiver(
+            X_c, Y_c,
+            SHmax_c[0], SHmax_c[1],
+            color="blue", scale=scale, headwidth=1, headlength=0
+        )
+        ax.quiver(
+            X_c, Y_c,
+            -SHmax_c[0], -SHmax_c[1],
+            color="blue", scale=scale, headwidth=1, headlength=0
+        )
+        ax.quiver(
+            X_c, Y_c,
+            SHmin_c[0], SHmin_c[1],
+            color="red", scale=scale, headwidth=1, headlength=0
+        )
+        ax.quiver(
+            X_c, Y_c,
+            -SHmin_c[0], -SHmin_c[1],
+            color="red", scale=scale, headwidth=1, headlength=0
+        )
+    elif arrow_type=='velocity':
+        # Plot quiver arrows for velocity
+        q = ax.quiver(
+                        X_c, Y_c,
+                        v_c[0], v_c[1],
+                        color="k", scale=scale, width=0.004, 
+                        headwidth=3., headlength=4., zorder=5,
+                    )
+        # Add a reference arrow (quiver key) for 1 m/s (adjust U, label, and positioning as needed)
+        ax.quiverkey(q, X=-0.05, Y=-0.09, U=1, label='1 cm/yr', labelpos='E')
 
     # Format grid and ticks
     ax.grid()  # grid on
@@ -578,7 +659,6 @@ def plot_scalar_with_shmax_shmin(
     plt.show()
 
 
-
 # plot
 plot_scalar_with_shmax_shmin(
     X, Y, Z,
@@ -597,14 +677,81 @@ plot_scalar_with_shmax_shmin(
     ylim=(0+delta, 512-delta),
     output_dir=output_dir,
     fileformat='pdf',
-    filename=f"strain_dilatation_shmax_shmin_{vel_file_no}_{analy_space}",
+    filename=f"strain_dilatation_shmax_shmin_{vel_file_no}_{analy_space}_{int(slice_depth)}",
     # subplots_adjust=dict(left=0.35, right=0.85, bottom=0.1, top=0.85),
     cb_horz_save=True,
     cb_vert_save=False,
-    cb_name=f"strain_dilatation_shmax_shmin_{vel_file_no}_{analy_space}",
+    cb_name=f"strain_dilatation_shmax_shmin_{vel_file_no}_{analy_space}_{int(slice_depth)}",
     cb_axis_label=r"Dilatation $(1/s)$",
     cb_horz_label_xpos=0.5,
     cb_horz_label_ypos=-2.1,
+)
+
+# +
+# this is background data
+slice_coords = masked_mesh.points 
+slice_scalar = masked_mesh["velocity"]/(3.17e-10/1000)
+# Compute the magnitude (norm) for each velocity vector
+velocity_magnitude = np.linalg.norm(slice_scalar, axis=1)
+
+# Define the grid you want
+x_old, y_old = slice_coords[:,0], slice_coords[:,1]
+x_new = np.linspace(x_old.min(), x_old.max(), 260)
+y_new = np.linspace(y_old.min(), y_old.max(), 260)
+X, Y = np.meshgrid(x_new, y_new)
+Z = griddata(points=(x_old, y_old), values=velocity_magnitude, xi=(X, Y), method='cubic')
+
+# this is foreground data
+# Make a coarse grid
+nx, ny, nz = 15, 15, 1
+grid = pv.ImageData()
+grid.dimensions = (nx, ny, nz)
+grid.origin = (x_min, y_min, z_min)
+
+dx = (x_max - x_min) / (nx - 1)
+dy = (y_max - y_min) / (ny - 1)
+dz = 1.0  # for 2D slice
+grid.spacing = (dx, dy, dz)
+
+# Resample the slice_mesh onto the coarse grid
+coarse_mesh = grid.sample(masked_mesh)
+
+X_c = coarse_mesh.points[:, 0].reshape(nx, ny)
+Y_c = coarse_mesh.points[:, 1].reshape(nx, ny)
+
+v_x = coarse_mesh["velocity"][:, 0].reshape(nx, ny)  
+v_y = coarse_mesh["velocity"][:, 1].reshape(nx, ny)
+v_c = [v_x/(3.17e-10/1000), v_y/(3.17e-10/1000)]
+
+# -
+
+# plot
+plot_scalar_with_shmax_shmin(
+    X, Y, Z,
+    X_c, Y_c,
+    v_c,
+    None,
+    cmap=cm.hawaii_r.resampled(20),  
+    levels=50,
+    vmin=0,
+    vmax=1.5,
+    scale=16,
+    x_axis_label='bottom',
+    y_axis_label='left',
+    ax_text_size=18,
+    xlim=(-512+delta, 0-delta),
+    ylim=(0+delta, 512-delta),
+    output_dir=output_dir,
+    fileformat='pdf',
+    filename=f"velocity_{vel_file_no}_{analy_space}_{int(slice_depth)}",
+    # subplots_adjust=dict(left=0.35, right=0.85, bottom=0.1, top=0.85),
+    cb_horz_save=True,
+    cb_vert_save=False,
+    cb_name=f"velocity_{vel_file_no}_{analy_space}_{int(slice_depth)}",
+    cb_axis_label=r"Velocity $(cm/yr)$",
+    cb_horz_label_xpos=0.5,
+    cb_horz_label_ypos=-2.1,
+    arrow_type='velocity'
 )
 
 

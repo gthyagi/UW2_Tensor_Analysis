@@ -12,3 +12,6 @@
 !.gitignore
 
 .ipynb_checkpoints/
+
+!reading_material_stress_tensor_analysis.pdf
+!shmax_fem_geomechanics.pdf

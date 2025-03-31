@@ -406,47 +406,7 @@ masked_mesh = slice_mesh.extract_points(mask, adjacent_cells=True)
 # # # Convert the PNG to PDF using Pillow
 # # im = Image.open(f'{filename}.png')
 # # im.save(f'{filename}.pdf', "PDF", resolution=100.0)
-# +
-# this is background data
-slice_coords = masked_mesh.points # slice_mesh.points
-slice_scalar = masked_mesh["dilatation"] # slice_mesh["dilatation"]
-
-# Define the grid you want
-x_old, y_old = slice_coords[:,0], slice_coords[:,1]
-x_new = np.linspace(x_old.min(), x_old.max(), 260)
-y_new = np.linspace(y_old.min(), y_old.max(), 260)
-X, Y = np.meshgrid(x_new, y_new)
-Z = griddata(points=(x_old, y_old), values=slice_scalar, xi=(X, Y), method='cubic')
-
-# this is foreground data
-# Make a coarse grid
-nx, ny, nz = 20, 20, 1
-grid = pv.ImageData()
-grid.dimensions = (nx, ny, nz)
-grid.origin = (x_min, y_min, z_min)
-
-dx = (x_max - x_min) / (nx - 1)
-dy = (y_max - y_min) / (ny - 1)
-dz = 1.0  # for 2D slice
-grid.spacing = (dx, dy, dz)
-
-# Resample the slice_mesh onto the coarse grid
-coarse_mesh = grid.sample(masked_mesh)
-
-X_c = coarse_mesh.points[:, 0].reshape(nx, ny)
-Y_c = coarse_mesh.points[:, 1].reshape(nx, ny)
-
-SHmax_x = coarse_mesh["SHmax"][:, 0].reshape(nx, ny)  
-SHmax_y = coarse_mesh["SHmax"][:, 1].reshape(nx, ny)
-SHmax_c = [SHmax_x, SHmax_y]
-
-SHmin_x = coarse_mesh["SHmin"][:, 0].reshape(nx, ny) 
-SHmin_y = coarse_mesh["SHmin"][:, 1].reshape(nx, ny)
-SHmin_c = [SHmin_x, SHmin_y]
-
-
 # -
-
 def plot_scalar_with_shmax_shmin(
     # Data for contourf and quiver plots
     X, Y, Z,
@@ -560,22 +520,22 @@ def plot_scalar_with_shmax_shmin(
         # Plot quiver arrows for SHmax (blue) and SHmin (red)
         ax.quiver(
             X_c, Y_c,
-            SHmax_c[0], SHmax_c[1],
+            SHmax_c[0], SHmax_c[1], width=0.008,
             color="blue", scale=scale, headwidth=1, headlength=0
         )
         ax.quiver(
             X_c, Y_c,
-            -SHmax_c[0], -SHmax_c[1],
+            -SHmax_c[0], -SHmax_c[1], width=0.008,
             color="blue", scale=scale, headwidth=1, headlength=0
         )
         ax.quiver(
             X_c, Y_c,
-            SHmin_c[0], SHmin_c[1],
+            SHmin_c[0], SHmin_c[1], width=0.008,
             color="red", scale=scale, headwidth=1, headlength=0
         )
         ax.quiver(
             X_c, Y_c,
-            -SHmin_c[0], -SHmin_c[1],
+            -SHmin_c[0], -SHmin_c[1], width=0.008,
             color="red", scale=scale, headwidth=1, headlength=0
         )
     elif arrow_type=='velocity':
@@ -583,8 +543,8 @@ def plot_scalar_with_shmax_shmin(
         q = ax.quiver(
                         X_c, Y_c,
                         v_c[0], v_c[1],
-                        color="k", scale=scale, width=0.004, 
-                        headwidth=3., headlength=4., zorder=5,
+                        color="k", scale=scale, width=0.008, 
+                        headwidth=3., headlength=5., zorder=5,
                     )
         # Add a reference arrow (quiver key) for 1 m/s (adjust U, label, and positioning as needed)
         ax.quiverkey(q, X=-0.05, Y=-0.09, U=1, label='1 cm/yr', labelpos='E')
@@ -658,6 +618,45 @@ def plot_scalar_with_shmax_shmin(
 
     plt.show()
 
+
+# +
+# this is background data
+slice_coords = masked_mesh.points # slice_mesh.points
+slice_scalar = masked_mesh["dilatation"] # slice_mesh["dilatation"]
+
+# Define the grid you want
+x_old, y_old = slice_coords[:,0], slice_coords[:,1]
+x_new = np.linspace(x_old.min(), x_old.max(), 260)
+y_new = np.linspace(y_old.min(), y_old.max(), 260)
+X, Y = np.meshgrid(x_new, y_new)
+Z = griddata(points=(x_old, y_old), values=slice_scalar, xi=(X, Y), method='cubic')
+
+# this is foreground data
+# Make a coarse grid
+nx, ny, nz = 20, 20, 1
+grid = pv.ImageData()
+grid.dimensions = (nx, ny, nz)
+grid.origin = (x_min, y_min, z_min)
+
+dx = (x_max - x_min) / (nx - 1)
+dy = (y_max - y_min) / (ny - 1)
+dz = 1.0  # for 2D slice
+grid.spacing = (dx, dy, dz)
+
+# Resample the slice_mesh onto the coarse grid
+coarse_mesh = grid.sample(masked_mesh)
+
+X_c = coarse_mesh.points[:, 0].reshape(nx, ny)
+Y_c = coarse_mesh.points[:, 1].reshape(nx, ny)
+
+SHmax_x = coarse_mesh["SHmax"][:, 0].reshape(nx, ny)  
+SHmax_y = coarse_mesh["SHmax"][:, 1].reshape(nx, ny)
+SHmax_c = [SHmax_x, SHmax_y]
+
+SHmin_x = coarse_mesh["SHmin"][:, 0].reshape(nx, ny) 
+SHmin_y = coarse_mesh["SHmin"][:, 1].reshape(nx, ny)
+SHmin_c = [SHmin_x, SHmin_y]
+# -
 
 # plot
 plot_scalar_with_shmax_shmin(

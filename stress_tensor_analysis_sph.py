@@ -12,16 +12,45 @@ from PIL import Image
 from scipy.interpolate import griddata
 import os
 from pyvista import CellType
+from pyvista import Spline
+from matplotlib.path import Path
+
+import math
+from scipy import spatial
+from scipy.stats import linregress
+import matplotlib as mpl
+from mpl_toolkits.axes_grid1.inset_locator import inset_axes
+import cartopy
+import cartopy.crs as ccrs
+from cartopy.mpl.gridliner import LONGITUDE_FORMATTER, LATITUDE_FORMATTER
+from cartopy.mpl.ticker import LongitudeFormatter, LatitudeFormatter
+import warnings
+import matplotlib.patches as patches
+from scipy import interpolate
+from scipy.spatial import KDTree
+from numpy.polynomial.polynomial import polyfit
+import matplotlib.ticker as mticker
+import copy
+import transform_data_coords as tds
+from netCDF4 import Dataset
+
+# +
+# Suppress specific warnings
+import numpy.polynomial.polyutils as pu
+
+warnings.simplefilter('ignore', pu.RankWarning)
+warnings.filterwarnings("ignore", category=UserWarning)
+warnings.filterwarnings('ignore', category=DeprecationWarning)
 
 # +
 # input dir
 
-# input_dir = '/Volumes/seagate4_1/spherical_models/sum_sph_128448608_1104_DMesh_30_25_const_coh_UPDen_0.0_SPDen_1.0_LMVisc_30_hden15_LM_mitp08/'
+input_dir = '/Volumes/seagate4_1/spherical_models/sum_sph_128448608_1104_DMesh_30_25_const_coh_UPDen_0.0_SPDen_1.0_LMVisc_30_hden15_LM_mitp08/'
 # input_dir = '/Volumes/seagate4_1/spherical_models/sum_sph_128448608_1104_DMesh_30_25_const_coh_UPDen_0.0_SPDen_1.0_LMVisc_30_LM_smean2/'
 # input_dir = '/Volumes/seagate4_1/spherical_models/sum_sph_128448608_1104_DMesh_30_25_const_coh_UPDen_0.0_SPDen_1.0_LMVisc_30_LM_mitp08/'
 # input_dir = '/Volumes/seagate4_1/spherical_models/sum_sph_128448608_1104_DMesh_30_25_const_coh_UPDen_0.0_SPDen_1.0_LMVisc_30/'
 # input_dir = '/Volumes/seagate4_1/spherical_models/sum_sph_80352368_336_DMesh_30_25_const_coh_UPDen_0.0_SPDen_1.0_LMVisc_30/'
-input_dir = '/Volumes/seagate4_1/spherical_models/sum_sph_80272320_240_DMesh_30_25_const_coh_UPDen_0.0_SPDen_1.0_LMVisc_30/'
+# input_dir = '/Volumes/seagate4_1/spherical_models/sum_sph_80272320_240_DMesh_30_25_const_coh_UPDen_0.0_SPDen_1.0_LMVisc_30/'
 
 output_dir = input_dir+'stress_tensor_analysis/'
 if not os.path.isdir(output_dir):
@@ -265,10 +294,16 @@ for i in range(N):
     elif s=='Normal':
         colors[i] = [1.0, 0.0, 0.0]   # Red for Normal
     else:
-        colors[i] = [0.0, 1.0, 0.0]   # Green for Strike-slip
-
-
+        colors[i] = [0.0, 0.4, 0.0]   # dark Green for Strike-slip
 # -
+
+if s=='Thrust':
+    colors[i] = [0.0, 0.0, 1.0]   # Blue for Thrust
+elif s=='Normal':
+    colors[i] = [1.0, 0.0, 0.0]   # Red for Normal
+else:
+    colors[i] = [0.0, 0.4, 0.0]   # dark Green for Strike-slip
+
 
 def make_3d_vec(arr):
     'convert array of (N, 2) to (N, 3)'
@@ -318,23 +353,94 @@ pl.add_mesh(glyph2, scalars="style_color", rgb=True)
 # pl.add_mesh(glyph3, color="green")
 pl.show(cpos='xy')
 
-# +
-N = 66 #76 # 64
-mask = np.arange(surface_mesh.n_points) % N == 0
 
-# Extract sampled points only
-sampled_points = surface_mesh.points[mask]
-sampled_SHmin = surface_mesh["SHmin"][mask]
-sampled_SHmax = surface_mesh["SHmax"][mask]
-sampled_stress_inv = surface_mesh["stress_inv"][mask]
-sampled_style_color = surface_mesh["style_color"][mask]
+# +
+def _convert_cubedsphere_xyz_to_llr(c_xyz: np.ndarray) -> np.ndarray:
+    """
+    Converts cubedsphere (x, y, z) coordinates to cubedsphere (longitude, latitude, radius).
+    """
+    if np.any(np.isclose(c_xyz[:, 2], 0)):
+        raise ValueError("z coordinate is zero for one or more points; cannot perform conversion.")
+
+    tan_lon = c_xyz[:, 0] / c_xyz[:, 2]
+    tan_lat = c_xyz[:, 1] / c_xyz[:, 2]
+    factor = np.sqrt(tan_lon**2 + tan_lat**2 + 1)
+
+    lon = np.degrees(np.arctan(tan_lon))
+    lat = np.degrees(np.arctan(tan_lat))
+    radius = c_xyz[:, 2] * factor
+    return np.column_stack((lon, lat, radius))
+
+def _convert_cubedsphere_llr_to_xyz(c_llr: np.ndarray) -> np.ndarray:
+		"""
+		Converts cubedsphere coordinates from (longitude, latitude, radius) to (x, y, z).
+
+		Calculations:
+		  - Compute the tangent of the longitude and latitude (in radians).
+		  - Compute d = radius / sqrt(tan(lon)^2 + tan(lat)^2 + 1).
+		  - Compute:
+			  x = d * tan(lon)
+			  y = d * tan(lat)
+			  z = d
+		"""
+		# Compute tangent values for longitude and latitude (converted from degrees to radians)
+		tan_lon = np.tan(np.deg2rad(c_llr[:, 0]))
+		tan_lat = np.tan(np.deg2rad(c_llr[:, 1]))
+		denom = np.sqrt(tan_lon**2 + tan_lat**2 + 1)
+		d = c_llr[:, 2] / denom
+		return np.column_stack((d * tan_lon, d * tan_lat, d))
+
+# +
+# resample surface points
+surface_mesh_llr = np.round(_convert_cubedsphere_xyz_to_llr(surface_mesh.points), 6)
+lon_min, lon_max = np.ceil(surface_mesh_llr[:,0].min()), np.floor(surface_mesh_llr[:,0].max())
+lat_min, lat_max = np.ceil(surface_mesh_llr[:,1].min()), np.floor(surface_mesh_llr[:,1].max())
+
+freq=1
+lon_new = np.linspace(lon_min, lon_max, num=np.int32((lon_max-lon_min)/freq)+1, endpoint=True)
+lat_new = np.linspace(lat_min, lat_max, num=np.int32((lat_max-lat_min)/freq)+1, endpoint=True)
+print(lon_new, lat_new)
+
+lon_new_grid, lat_new_grid = np.meshgrid(lon_new, lat_new)
+new_grid_points = np.column_stack((lon_new_grid.ravel(), lat_new_grid.ravel()))
+
+
+# -
+
+def interpolate_vector_field(points, vectors, new_grid_points, method='linear'):
+    """
+    Interpolate a 3D vector field onto a new grid.
+    """
+    u, v, w = vectors[:, 0], vectors[:, 1], vectors[:, 2]
+    
+    u_interp = griddata(points, u, new_grid_points, method=method)
+    v_interp = griddata(points, v, new_grid_points, method=method)
+    w_interp = griddata(points, w, new_grid_points, method=method)
+
+    vec_interp = np.stack([u_interp, v_interp, w_interp], axis=1)
+    return vec_interp
+
+
+# interpolating new data
+SHmax_interp = interpolate_vector_field(surface_mesh_llr[:, 0:2], surface_mesh["SHmax"], new_grid_points)
+color_interp = interpolate_vector_field(surface_mesh_llr[:, 0:2], surface_mesh["style_color"], new_grid_points, method='nearest')
 
 # Create a new PolyData
-resampled_mesh = pv.PolyData(sampled_points)
-resampled_mesh["SHmin"] = sampled_SHmin
-resampled_mesh["SHmax"] = sampled_SHmax
-resampled_mesh["stress_inv"] = sampled_stress_inv
-resampled_mesh["style_color"] = sampled_style_color
+new_grid_points_3d = np.hstack([new_grid_points, np.ones((new_grid_points.shape[0], 1))])
+resampled_mesh = pv.PolyData(_convert_cubedsphere_llr_to_xyz(new_grid_points_3d))
+resampled_mesh["SHmax"] = SHmax_interp
+resampled_mesh["style_color"] = color_interp
+
+# load boundary vtk file
+path = '/Users/tgol0006/phd_tg/phd_b2023/create_vtk_rot_models/model_61_120_-45_35_rot_vtk/'
+# List of VTK file names
+filenames = [
+    'uw_ind_aus_pb.vtk',
+    'uw_ind_aus_cont.vtk',
+    'uw_model_bbox.vtk',
+    'sum_subduction_symbols.vtk',
+    'him_subduction_symbols.vtk',
+]
 
 # +
 # Plot ONLY the coarse mesh
@@ -363,6 +469,11 @@ resampled_mesh["minus_SHmax"] = -np.array(resampled_mesh["SHmax"])
 glyphs_max_neg = resampled_mesh.glyph(orient="minus_SHmax", scale=scale, factor=scale_factor, geom=custom_arrow)
 pl.add_mesh(glyphs_max_neg, scalars="style_color", rgb=True)
 
+# Loop through and add each mesh
+for fname in filenames:
+    mesh = pv.read(path + fname)
+    pl.add_mesh(mesh, color='k', opacity=1.0)
+
 pl.show(cpos='xy')
 pl.camera.zoom(1.4)
 # # Save a high-resolution screenshot as a PNG file
@@ -372,275 +483,687 @@ pl.camera.zoom(1.4)
 # # Convert the PNG to PDF using Pillow
 # im = Image.open(f'{filename}.png')
 # im.save(f'{filename}.pdf', "PDF", resolution=100.0)
-
-# +
-# # this is background data
-# slice_coords = slice_mesh.points
-# slice_scalar = slice_mesh["dilatation"]
-
-# # Define the grid you want
-# x_old, y_old = slice_coords[:,0], slice_coords[:,1]
-# x_new = np.linspace(x_old.min(), x_old.max(), 260)
-# y_new = np.linspace(y_old.min(), y_old.max(), 260)
-# X, Y = np.meshgrid(x_new, y_new)
-# Z = griddata(points=(x_old, y_old), values=slice_scalar, xi=(X, Y), method='cubic')
-
-# # this is foreground data
-# # Make a coarse grid
-# nx, ny, nz = 20, 20, 1
-# grid = pv.ImageData()
-# grid.dimensions = (nx, ny, nz)
-# grid.origin = (x_min, y_min, z_min)
-
-# dx = (x_max - x_min) / (nx - 1)
-# dy = (y_max - y_min) / (ny - 1)
-# dz = 1.0  # for 2D slice
-# grid.spacing = (dx, dy, dz)
-
-# # Resample the slice_mesh onto the coarse grid
-# coarse_mesh = grid.sample(masked_mesh)
-
-# X_c = coarse_mesh.points[:, 0].reshape(nx, ny)
-# Y_c = coarse_mesh.points[:, 1].reshape(nx, ny)
-
-# SHmax_x = coarse_mesh["SHmax"][:, 0].reshape(nx, ny)  
-# SHmax_y = coarse_mesh["SHmax"][:, 1].reshape(nx, ny)
-# SHmax_c = [SHmax_x, SHmax_y]
-
-# SHmin_x = coarse_mesh["SHmin"][:, 0].reshape(nx, ny) 
-# SHmin_y = coarse_mesh["SHmin"][:, 1].reshape(nx, ny)
-# SHmin_c = [SHmin_x, SHmin_y]
 # -
 
-def plot_scalar_with_shmax_shmin(
-    # Data for contourf and quiver plots
-    X, Y, Z,
-    X_c, Y_c,
-    SHmax_c, SHmin_c,
-    # Contour options
-    cmap=None,
-    levels=50,
-    vmin=-0.04,
-    vmax=0.04,
-    # Quiver options
-    scale=0.4,
-    # Axis formatting options
-    x_axis_label='bottom',  # options: 'off', 'top', 'bottom'
-    y_axis_label='left',    # options: 'off', 'left'
-    ax_text_size=18,
-    xlim=(-512, 0),
-    ylim=(0, 512),
-    # File saving options
-    output_dir=output_dir,
-    fileformat='pdf',       # options: 'pdf', 'eps', 'png', etc.
-    filename="test",
-    # Subplot adjustment (passed as dict)
-    subplots_adjust=dict(left=0.125, right=0.9, bottom=0.11, top=0.88, wspace = 0.2, hspace = 0.2),
-    # Colorbar separate saving options
-    cb_horz_save=False,
-    cb_vert_save=False,
-    cb_name="colorbar",
-    cb_axis_label="Dilatation",
-    cb_horz_label_xpos=0.5,
-    cb_horz_label_ypos=1.1,
-    cb_vert_label_xpos=1.1,
-    cb_vert_label_ypos=0.5,
-    # Optionally supply a separate colormap for colorbar saving
-    colormap=None
-):
+def get_t_pts_m_angle(_trench_pt, _nn_pt=4, _n_pts=10):
     """
-    Plots a filled contour (Z over X, Y) with overlaid quiver arrows
-    for SHmax (blue) and SHmin (red) (and their negatives), formats the axes,
-    adjusts subplot spacing, and saves the figure. Optionally, the colorbar
-    is saved separately as a PNG.
-
-    Parameters
-    ----------
-    X, Y, Z : 2D arrays
-        Data for the contourf plot.
-    X_c, Y_c : 1D or 2D arrays
-        Coordinates for the quiver arrows.
-    SHmax_c, SHmin_c : tuple or list of two arrays each
-        For example, SHmax_c = (Umax, Vmax) and SHmin_c = (Umin, Vmin).
-    cmap : matplotlib.colors.Colormap, optional
-        Colormap for contourf. If None, uses plt.cm.viridis.
-    levels : int, optional
-        Number of contour levels.
-    vmin, vmax : float, optional
-        Color limits for the contour plot.
-    scale : float, optional
-        Scale factor for the quiver arrows.
-    x_axis_label : {'off', 'top', 'bottom'}, optional
-        Controls the x-axis labeling.
-    y_axis_label : {'off', 'left'}, optional
-        Controls the y-axis labeling.
-    ax_text_size : int, optional
-        Font size for axis labels and ticks.
-    xlim : tuple, optional
-        x-axis limits.
-    ylim : tuple, optional
-        y-axis limits.
-    output_dir : str, optional
-        Directory to save the figure.
-    fileformat : str, optional
-        Format for saving the figure (e.g., 'pdf', 'eps', 'png').
-    savefile : str, optional
-        Base name for the saved file.
-    subplots_adjust : dict, optional
-        Keyword arguments for plt.subplots_adjust.
-    cb_save : bool, optional
-        If True, save the colorbar separately as a PNG.
-    cb_vert_save : bool, optional
-        If True, also save a vertical colorbar as a PNG.
-    cb_name : str, optional
-        Base name for the saved colorbar file.
-    cb_axis_label : str, optional
-        Title for the colorbar.
-    cb_label_xpos, cb_label_ypos : float, optional
-        Title position for the horizontal colorbar.
-    cb_vert_label_xpos, cb_vert_label_ypos : float, optional
-        Title position for the vertical colorbar.
-    colormap : matplotlib.colors.Colormap, optional
-        Colormap to use for the colorbar if different from cmap.
-    
-    Returns
-    -------
-    None
+    input: trench points, marker frequency and how many nearneighbours to find
+    output: marker coords, angle
     """
-
-    plt.rc('font', size=ax_text_size)
-    fig, ax = plt.subplots(figsize=(8, 8))
-
-    # Plot the filled contour
-    cs = ax.contourf(
-        X, Y, Z,
-        levels=levels,
-        cmap=cmap,
-        vmin=vmin,
-        vmax=vmax
-    )
-
-    # Plot quiver arrows for SHmax (blue) and SHmin (red)
-    ax.quiver(
-        X_c, Y_c,
-        SHmax_c[0], SHmax_c[1],
-        color="blue", scale=scale, headwidth=1, headlength=0
-    )
-    ax.quiver(
-        X_c, Y_c,
-        -SHmax_c[0], -SHmax_c[1],
-        color="blue", scale=scale, headwidth=1, headlength=0
-    )
-    ax.quiver(
-        X_c, Y_c,
-        SHmin_c[0], SHmin_c[1],
-        color="red", scale=scale, headwidth=1, headlength=0
-    )
-    ax.quiver(
-        X_c, Y_c,
-        -SHmin_c[0], -SHmin_c[1],
-        color="red", scale=scale, headwidth=1, headlength=0
-    )
-
-    # Format grid and ticks
-    ax.grid()  # grid on
-    ax.tick_params(axis='both', direction='in')  # turn tickmarks inward
-    ax.tick_params(axis='x', which='major', pad=13)  # adjust x-axis tick padding
-
-    # Set axis limits and labels for x-axis
-    ax.set_xlim(xlim)
-    if x_axis_label == 'off':
-        ax.set_xticklabels([])  # turn-off tick labels
-        ax.set_xlabel("")        # turn-off axis label
-    elif x_axis_label == 'top':
-        ax.xaxis.tick_top()
-        ax.xaxis.set_label_position('top')
-        ax.set_xlabel('x (km)', fontsize=ax_text_size, labelpad=10)
-        ax.xaxis.set_tick_params(labelsize=ax_text_size)
-    elif x_axis_label == 'bottom':
-        ax.set_xlabel('x (km)', fontsize=ax_text_size)
-        ax.xaxis.set_tick_params(labelsize=ax_text_size)
-
-    # Set axis limits and labels for y-axis
-    ax.set_ylim(ylim)
-    if y_axis_label == 'off':
-        ax.set_yticklabels([])  # turn-off tick labels
-        ax.set_ylabel("")        # turn-off axis label
-    elif y_axis_label == 'left':
-        ax.set_ylabel('y (km)', fontsize=ax_text_size)
-        ax.yaxis.set_tick_params(labelsize=ax_text_size)
-
-    # Adjust subplot spacing
-    plt.subplots_adjust(**subplots_adjust)
-
-    # Save the figure using the provided file format and output path
-    if fileformat == 'pdf':
-        plt.savefig(output_dir + filename + "." + fileformat, format=fileformat, bbox_inches='tight')
-    elif fileformat == 'png':
-        plt.savefig(output_dir + filename + "." + fileformat, dpi=150)
-
-    # Optionally save the colorbar separately as a horizontal PNG file
-    if cb_horz_save:
-        a = np.array([[vmin, vmax]])
-        plt.figure(figsize=(5, 5))
-        plt.imshow(a, cmap=cmap)
-        plt.gca().set_visible(False)
-        cax = plt.axes([0.1, 0.2, 1.15, 0.06])
-        cb = plt.colorbar(orientation='horizontal', cax=cax)
-        cb.ax.set_title(cb_axis_label, fontsize=ax_text_size, x=cb_horz_label_xpos, y=cb_horz_label_ypos)
-
-        if fileformat == 'pdf':
-            plt.savefig(output_dir + cb_name + "_horz.pdf", format=fileformat, bbox_inches='tight')
-        elif fileformat == 'png':
-            plt.savefig(output_dir + cb_name + "_horz.png", dpi=150)
-
-    # Optionally save the colorbar separately as a vertical PNG file
-    if cb_vert_save:
-        a = np.array([[vmin, vmax]])
-        plt.figure(figsize=(5, 5))
-        plt.imshow(a, cmap=cmap)
-        plt.gca().set_visible(False)
-        cax = plt.axes([0.1, 0.2, 0.06, 1.15])
-        cb = plt.colorbar(orientation='vertical', cax=cax)
-        cb.ax.set_title(cb_axis_label, fontsize=ax_text_size, x=cb_vert_label_xpos, y=cb_vert_label_ypos)
+    indx = np.linspace(10, len(_trench_pt)-10, num=_n_pts, endpoint=True, dtype=int)
+    t_pts_kdtree = spatial.KDTree(_trench_pt)
+    dist_arr, indx_arr = t_pts_kdtree.query(_trench_pt, k=_nn_pt)
+    marker_angle = np.zeros((_trench_pt.shape[0], 1))
+    for i, nn in enumerate(indx_arr):
+        nn_sort = np.sort(nn)
+        b, m = polyfit(_trench_pt[nn_sort][:,0], _trench_pt[nn_sort][:,1], 1)
+        marker_angle[i] = (math.atan(m)*180/math.pi)
         
-        if fileformat == 'pdf':
-            plt.savefig(output_dir + cb_name + "." + "_vert.pdf", format=fileformat, bbox_inches='tight')
-        elif fileformat == 'png':
-            plt.savefig(output_dir + cb_name + "." + "_vert.png", dpi=150)
+    return (_trench_pt[indx], marker_angle[indx])
 
-    plt.show()
+
+def rotate_arr(_data, _angle, _tc=''):
+    """
+    Inputs: data array, rotation angle
+    Returns: Rotated coordinates
+    """
+    
+    def rotate(_origin, _point, _angle):
+        """
+        Rotate a point counterclockwise by a given angle around a given origin.
+        The angle should be given in radians.
+        """
+        ox, oy = _origin
+        px, py = _point
+        qx = ox + math.cos(_angle) * (px - ox) - math.sin(_angle) * (py - oy)
+        qy = oy + math.sin(_angle) * (px - ox) + math.cos(_angle) * (py - oy)
+        return qx, qy
+
+    if _data.shape[1]==2:
+        _data_mod = np.zeros((_data.shape[0], 3))
+        _data_mod[:,0:2] = _data
+        _data_mod[:,2] = 0
+        _data_sphllr = _tc.translonlatr2sphlonlatr(_tc.geolonlat2translonlat(_data_mod))
+        rotated_data_sphllr = copy.deepcopy(_data_sphllr)
+    else:
+        _data_sphllr = _tc.translonlatr2sphlonlatr(_tc.geolonlat2translonlat(_data))
+        rotated_data_sphllr = copy.deepcopy(_data_sphllr)
+        
+    for count, coords in enumerate(_data_sphllr[:,0:2]):
+        rotated_data_sphllr[count][0], rotated_data_sphllr[count][1] = rotate([0, 0], coords, math.radians(_angle))
+    
+    rotated_data_coords = _tc.translonlat2geolonlat(_tc.sphlonlatr2translonlatr(rotated_data_sphllr))
+    
+    return rotated_data_coords
+
+
+def rotate_vec_arr(_data, _angle):
+    """
+    Inputs: data array, rotation angle
+    Returns: Rotated coordinates
+    """
+    
+    def rotate(_origin, _point, _angle):
+        """
+        Rotate a point counterclockwise by a given angle around a given origin.
+        The angle should be given in radians.
+        """
+        ox, oy = _origin
+        px, py = _point
+        qx = ox + math.cos(_angle) * (px - ox) - math.sin(_angle) * (py - oy)
+        qy = oy + math.sin(_angle) * (px - ox) + math.cos(_angle) * (py - oy)
+        return qx, qy
+    
+    rotated_data = copy.deepcopy(_data)
+    for count, vector in enumerate(_data[:,0:2]):
+        rotated_data[count][0], rotated_data[count][1] = rotate([0, 0], vector, math.radians(_angle))
+    
+    return rotated_data
+
+
+def plot_field_data_bmrot(_rotated_crs=True, _p_lon='', _p_lat='', _ax_set_extent='', _left_labels='', _bottom_labels='', _xlabel_size=18, _ylabel_size=18,
+                          _xlocator=[90, 100, 110, 120], _ylocator=[-10, 0, 10], _xlocator_mod='', _plot_ind_aus_pb='', _tlinewidth=2, _sum_trench_coords='', 
+                          _sum_tline_color='C4', _trench_marker='square', _tmarkersize=18, _markerwidth=2, _him_trench_coords='', _layer_coords_vel_list='', 
+                          _rotate_angle_list='', _lvec_freq='', _lvec_scale='', _lvec_width='', _lvec_color_list='', _lvec_label_name='', _regrid_num='', 
+                          _ref_vec_patch_loc='', _lvec_legend_loc='', _lvec_legend_col='', _lvec_legend_title='', _model_bbox_list='', _bbox_color_list='',
+                          _parameter_patch_loc='', _parameter='', _fig_label='', _fig_label_size='', _output_path='', _fname='', _fformat='', _dpi=150,
+                          _font_size=21):
+    """
+    plot field data
+    """
+    # fig settings
+    primary_fs = _font_size # primary fontsize
+    secondary_fs = 0.85*_font_size # secondary fontsize
+    plt.rc('font', size=primary_fs) # controls default text sizes
+    
+    if _rotated_crs:
+        fig = plt.figure(figsize=(9, 18))
+        proj = ccrs.RotatedPole(pole_latitude=_p_lat, pole_longitude=_p_lon)
+    else:
+        fig = plt.figure(figsize=(20, 10))
+        proj = ccrs.PlateCarree()
+    
+    # axes settings
+    ax = fig.add_subplot(111, projection=proj)
+    ax.set_extent(_ax_set_extent, crs=ccrs.PlateCarree())
+    ax.coastlines(resolution='50m', linewidth=1)
+    
+    # grid settings
+    gl=ax.gridlines(crs=ccrs.PlateCarree(), linewidth=0.2, draw_labels=False, x_inline=False, y_inline=False,)
+    gl.left_labels = _left_labels
+    gl.bottom_labels = _bottom_labels
+    gl.xformatter = LONGITUDE_FORMATTER
+    gl.yformatter = LATITUDE_FORMATTER
+    gl.xlabel_style = {'size': primary_fs}
+    gl.ylabel_style = {'size': primary_fs}
+    if _rotated_crs:
+        if _left_labels:
+            gl.xlocator = mticker.FixedLocator(_xlocator)
+            if _xlocator_mod==[90, 100]:
+                gl.bottom_labels = not _bottom_labels
+                gl.xlocator = mticker.FixedLocator(_xlocator_mod) #[90, 100]
+                ax.gridlines(crs=ccrs.PlateCarree(), linewidth=0.2, xlocs=_xlocator)
+        else:
+            if _bottom_labels:
+                if _left_labels:
+                    gl.xlocator = mticker.FixedLocator(_xlocator)
+                    ax.gridlines(crs=ccrs.PlateCarree(), linewidth=0.2, xlocs=_xlocator)
+                else:
+                    gl.xlocator = mticker.FixedLocator(_xlocator_mod)
+                    ax.gridlines(crs=ccrs.PlateCarree(), linewidth=0.2, xlocs=_xlocator)
+            else:
+                gl.xlocator = mticker.FixedLocator(_xlocator)
+            
+        gl.ylocator = mticker.FixedLocator(_ylocator)
+    
+     
+    # plotting ind au plate boundary
+    if len(_plot_ind_aus_pb)!=0:
+        ax.plot(_plot_ind_aus_pb[:,0], _plot_ind_aus_pb[:,1], color='brown', transform=ccrs.PlateCarree(), linewidth=_tlinewidth)
+    
+    # sum trench line and symbols
+    if len(_sum_trench_coords)!=0:
+        plt.plot(_sum_trench_coords[:,0], _sum_trench_coords[:,1], color=_sum_tline_color, transform=ccrs.PlateCarree(), linewidth=_tlinewidth)
+        sum_marker_coords, sum_marker_angle = get_t_pts_m_angle(_sum_trench_coords)
+        for i, coords in enumerate(sum_marker_coords):
+            if sum_marker_angle[i]<=0:
+                if _trench_marker=='triangle':
+                    plt.plot(coords[0]+0.2, coords[1]+0.5, '>', marker=(3, 0, sum_marker_angle[i]), markersize=_tmarkersize, color=_sum_tline_color, 
+                             transform=ccrs.PlateCarree())
+                elif _trench_marker=='square':
+                    plt.plot(coords[0]+0.2, coords[1]+0.5, 's', marker=(4, 0, sum_marker_angle[i]+60), markersize=_tmarkersize, markerfacecolor='none', 
+                             color=_sum_tline_color, transform=ccrs.PlateCarree(), markeredgewidth=_markerwidth,)
+            elif sum_marker_angle[i]>55:
+                if _trench_marker=='triangle':
+                    plt.plot(coords[0]+0.6, coords[1]+1, '>', marker=(3, 0, sum_marker_angle[i]-45), markersize=_tmarkersize, color=_sum_tline_color, 
+                             transform=ccrs.PlateCarree())
+                elif _trench_marker=='square':
+                    plt.plot(coords[0]+1.0, coords[1]+1, 's', marker=(4, 0, sum_marker_angle[i]+60), markersize=_tmarkersize, markerfacecolor='none', 
+                             color=_sum_tline_color, transform=ccrs.PlateCarree(), markeredgewidth=_markerwidth,)
+            elif sum_marker_angle[i]>=0 and sum_marker_angle[i]<=55:
+                if _trench_marker=='triangle':
+                    plt.plot(coords[0]+0.2, coords[1]+1, '>', marker=(3, 0, sum_marker_angle[i]+135), markersize=_tmarkersize, color=_sum_tline_color, 
+                             transform=ccrs.PlateCarree())
+                elif _trench_marker=='square':
+                    plt.plot(coords[0]+0.2, coords[1]+1, 's', marker=(4, 0, sum_marker_angle[i]+60), markersize=_tmarkersize, markerfacecolor='none', 
+                             color=_sum_tline_color, transform=ccrs.PlateCarree(), markeredgewidth=_markerwidth,)
+                    
+    # him trench line and symbols
+    if len(_him_trench_coords)!=0:
+        plt.plot(_him_trench_coords[:,0], _him_trench_coords[:,1], color=_sum_tline_color, transform=ccrs.PlateCarree(), linewidth=_tlinewidth)
+        him_marker_coords, him_marker_angle = get_t_pts_m_angle(_him_trench_coords, _n_pts=5)
+        for i, coords in enumerate(him_marker_coords):
+            if him_marker_angle[i]<=0:
+                if _trench_marker=='triangle':
+                    plt.plot(coords[0]+0.2, coords[1]+0.5, '>', marker=(3, 0, him_marker_angle[i]), markersize=_tmarkersize, color=_sum_tline_color, 
+                             transform=ccrs.PlateCarree())
+                elif _trench_marker=='square':
+                    plt.plot(coords[0]+0.2, coords[1]+0.5, 's', marker=(4, 0, him_marker_angle[i]+60), markersize=_tmarkersize, markerfacecolor='none', 
+                             color=_sum_tline_color, transform=ccrs.PlateCarree(), markeredgewidth=_markerwidth,)
+    
+    # plotting velocity vectors in layer 
+    if len(_layer_coords_vel_list)!=0:
+        for i, layer_coords_vel in enumerate(_layer_coords_vel_list):
+            layer_coords = layer_coords_vel[0]
+            layer_vel = rotate_vec_arr(layer_coords_vel[1][:,0:2], _rotate_angle_list[i])
+            if _regrid_num==0:
+                Q1 = ax.quiver(layer_coords[:,0][::_lvec_freq], layer_coords[:,1][::_lvec_freq], 
+                               layer_vel[:,0][::_lvec_freq], layer_vel[:,1][::_lvec_freq], 
+                               scale=_lvec_scale, zorder=3, transform=ccrs.PlateCarree(), 
+                               color=_lvec_color_list[i], headwidth=1, headlength=0)
+                Q2 = ax.quiver(layer_coords[:,0][::_lvec_freq], layer_coords[:,1][::_lvec_freq], 
+                               -layer_vel[:,0][::_lvec_freq], -layer_vel[:,1][::_lvec_freq], 
+                               scale=_lvec_scale, zorder=3, transform=ccrs.PlateCarree(), 
+                               color=_lvec_color_list[i], headwidth=1, headlength=0)
+                
+            else:
+                Q1 = ax.quiver(layer_coords[:,0][::_lvec_freq], layer_coords[:,1][::_lvec_freq], 
+                               layer_vel[:,0][::_lvec_freq], layer_vel[:,1][::_lvec_freq], 
+                               scale=_lvec_scale, width=_lvec_width, zorder=3, transform=ccrs.PlateCarree(), 
+                               color=_lvec_color_list[i], label=_lvec_label_name[i], regrid_shape=_regrid_num)
+        # qk1 = ax.quiverkey(Q1, 0.28, 0.275, 50, "50 mm/yr", coordinates='figure', color='k', zorder=10)
+        
+        # # adding patch around quiverkey
+        # rect1 = patches.Rectangle((_ref_vec_patch_loc[0], _ref_vec_patch_loc[1]), _ref_vec_patch_loc[2], 
+        #                           _ref_vec_patch_loc[3], alpha=0.5, ec='k', fc="white", linewidth=2, zorder=3, 
+        #                           transform=ax.transAxes,)
+        # ax.add_patch(rect1)
+        
+        # # legend location
+        # if type(_lvec_legend_loc)!=int: 
+        #     ax.legend(fontsize=primary_fs, ncol=_lvec_legend_col, loc='best', title=_lvec_legend_title,
+        #                bbox_to_anchor=(_lvec_legend_loc[0], _lvec_legend_loc[1]))
+        # else:
+        #     ax.legend(fontsize=primary_fs, ncol=_lvec_legend_col, loc=_lvec_legend_loc, title=_lvec_legend_title)
+    
+    # plotting models bbox
+    if len(_model_bbox_list)!=0:
+        for i, model_bbox in enumerate(_model_bbox_list):
+            ax.plot(model_bbox[:,0], model_bbox[:,1], color=_bbox_color_list[i])
+    
+    # parameter value display
+    if len(_parameter_patch_loc)!=0: 
+        ax.text(_parameter_patch_loc[0], _parameter_patch_loc[1], _parameter, horizontalalignment='center', 
+                fontsize=primary_fs, transform=ax.transAxes,
+                bbox=dict(facecolor='none', edgecolor='k', boxstyle='round, pad=0.2', alpha=0.5, fc="white"))
+    
+    # figure label
+    if len(_fig_label)!=0: 
+        ax.text(-0.045, 1.02, _fig_label, color='k', fontsize=primary_fs, transform=ax.transAxes,
+                bbox=dict(facecolor='none', edgecolor='k', boxstyle='round, pad=0.2', alpha=0.5, fc="white"))
+    
+    # This make sure all fig are same size     
+    plt.subplots_adjust(left=0.175, right=0.9, bottom=0.12, top=0.88, wspace=None, hspace=None) 
+    
+    # saving the plot
+    if _fformat=='eps':
+        fig.savefig(_output_path+_fname+"."+_fformat, format=_fformat, bbox_inches='tight')
+    elif _fformat=='png':
+        fig.savefig(_output_path+_fname+"."+_fformat, dpi=_dpi, bbox_inches='tight')
+    elif _fformat=='pdf':
+        fig.savefig(_output_path+_fname+"."+_fformat, format=_fformat, bbox_inches='tight')
+    elif _fformat=='ps':
+        fig.savefig(_output_path+_fname+"."+_fformat, format=_fformat, bbox_inches='tight', transparent=True)
+        
+    return
+
+# loading data
+pb_path = '/Users/tgol0006/phd_tg/phd_b2023/model_shapes_3d/make_boundary_pts/output_dir/'
+sum_trench_coords = np.loadtxt(pb_path+'sum_trench_coords.txt', delimiter=',')
+him_trench_coords = np.loadtxt(pb_path+'him_trench_coords.txt', delimiter=',')
+ind_aus_pb_coords = np.loadtxt(pb_path+'ind_aus_pb2002_slab2.txt', delimiter=',')
 
 # +
-# # plot
-# plot_scalar_with_shmax_shmin(
-#     X, Y, Z,
-#     X_c, Y_c,
-#     SHmax_c,
-#     SHmin_c,
-#     cmap=cm.roma_r.resampled(20),  
-#     levels=50,
-#     vmin=-1e-14,
-#     vmax=1e-14,
-#     scale=1600000000,
-#     x_axis_label='bottom',
-#     y_axis_label='left',
-#     ax_text_size=18,
-#     xlim=(-512, 0),
-#     ylim=(0, 512),
-#     output_dir=output_dir,
-#     fileformat='pdf',
-#     filename=f"stress_dilatation_shmax_shmin_{vel_file_no}_{analy_space}",
-#     # subplots_adjust=dict(left=0.35, right=0.85, bottom=0.1, top=0.85),
-#     cb_horz_save=True,
-#     cb_vert_save=False,
-#     cb_name=f"stress_dilatation_shmax_shmin_{vel_file_no}_{analy_space}",
-#     cb_axis_label=r"Dilatation $(1/s)$",
-#     cb_horz_label_xpos=0.5,
-#     cb_horz_label_ypos=-2.1,
-# )
+# plot settings
+ax_extent_rot = [70.7, 111.6, -41.4, 31.6]
+
+# rotation pole coordinates
+p_lat=74 
+p_lon=182.5
+
+left_labels, bottom_labels = True, True
+
+color_list = ['C2', 'k']
+
+# loading box coordinates
+model_bbox_list = []
+
+model_shape_path = '/Users/tgol0006/phd_tg/phd_b2023/model_shapes_3d/'
+model = 'model_61_120_-45_35_rot'
+bbox_path = model_shape_path+model+'/qgis_files/'
+
+bbox_coords = np.loadtxt(bbox_path+'box_coords.txt', delimiter=',')
+model_bbox_list += [bbox_coords]
+
+rotate_angle = -16
 # -
 
+tc = tds.transform_coords(61, 120, -45, 35)
+resam_surface_rot_glld = np.round(tc.uw_xyz2geo_lonlatr(resampled_mesh.points), decimals=2)
+print(resam_surface_rot_glld)
+resam_surface_glld = rotate_arr(resam_surface_rot_glld, rotate_angle, tc)
+print(resam_surface_glld)
 
+ref_vec_patch_loc2 = [0.02, 0.02, 0.25, 0.07]
+parameter_patch_loc=[0.86, 0.94]
+
+# preparing data for the plot
+layer_coords_vel_list = [(resam_surface_glld[:,0:2], resampled_mesh['SHmax'][:,0:2])]
+color_list = [resampled_mesh['style_color']]
+
+plot_field_data_bmrot(_rotated_crs=True, _p_lon=p_lon, _p_lat=p_lat, _ax_set_extent=ax_extent_rot, _left_labels=left_labels, _bottom_labels=bottom_labels, 
+                      _xlabel_size=18, _ylabel_size=18, _xlocator=[60, 80, 100, 120], _ylocator=[-20, 0, 20, 40], _xlocator_mod='', _plot_ind_aus_pb=ind_aus_pb_coords, 
+                      _tlinewidth=3, _sum_trench_coords=sum_trench_coords, _sum_tline_color='C4', _trench_marker='square', _tmarkersize=18, _markerwidth=2, 
+                      _him_trench_coords=him_trench_coords, _layer_coords_vel_list=layer_coords_vel_list, _rotate_angle_list=rotate_angle_list, _lvec_freq=1, 
+                      _lvec_scale=75, _lvec_width=0.007, _lvec_color_list=color_list, _lvec_label_name='', _regrid_num=0, _ref_vec_patch_loc='', 
+                      _lvec_legend_loc=1, _lvec_legend_col=1, _lvec_legend_title='', _model_bbox_list=model_bbox_list, _bbox_color_list=['cyan', 'k'],
+                      _parameter_patch_loc='', _parameter='', _fig_label='', _fig_label_size=18, _output_path=output_dir, _fname='model3c_shmax', 
+                      _fformat='pdf', _dpi=150,)
+
+
+def load_nc_file(file_path):
+    """
+    By loading nc file creates new arrays from data within the dataset
+    """
+    dataset = Dataset(file_path)
+    values = dataset.variables['z'][:] 
+    lonsG = dataset.variables['x'][:] # Lons in degrees
+    latsG = dataset.variables['y'][:] # Lats in degrees
+    dataset.close()
+    data_set = {}
+    data_set['lon'] = lonsG
+    data_set['lat'] = latsG
+    data_set['data'] = values
+    return data_set
+
+
+def plot_field_data(_layer_coords='', _layer_data='', _ldata_freq='', _layer_vel='', _lvec_freq=1, _lvec_scale=400,
+                    _plot_trench_vel=False, _trench_coords_vel='', _trench_coords_vel_orig='', _tvec_freq=15, 
+                    _tvec_scale=150, _regrid_num=20, _colormap='', _vmin='', _vmax='', _plot_markersize='', 
+                    _ax_set_extent='', _ax_set_xticks='', _rotated_crs=False, _p_lon='', _p_lat='', _cb_axis_label='',
+                    _cb_pos=[0.36, 0.05, 0.3, 0.027], _cb_label_xpos=1.16, _cb_label_ypos=-0.2,  _sum_trench_coords='', 
+                    _fig_label='', _fig_label_x='', _fig_label_y='', _parameter_patch_loc='', _parameter='', 
+                    _fig_label_size=18, _cb_ticklabels='', _ref_vec_patch_loc='', _cb_display=True, 
+                    _quiverkey_loc=[0.4, 0.15], _sum_tline_color='C4', _plot_model_box='', _plot_ind_aus_pb='', 
+                    _him_trench_coords='', _cb_bounds='', _left_labels = True, _bottom_labels = True, 
+                    _cb_save=False, _ax_text_size=18, _cb_name='', _para_text_size=18, _cb_text_size=22, 
+                    _figsize_cb=(10/2, 10/2), _xlocator=[90, 100, 110, 120], _ylocator=[-10, 0, 10], 
+                    _xlabel_size=18, _ylabel_size=18, _output_path='', _fname='', _fformat='', _trench_marker='',
+                    _dpi=150, _cb_orient='vertical', _sum_tcoords_option=2, _markerwidth=2, _tmarkersize='', 
+                    _tlinewidth=2, _xlocator_mod='', _par_color='', _contour_data='', _contour_levels='', _contour_cmap='', 
+                    _ctr_vmin='', _ctr_vmax='', _up_pf_list='', _tip_indx_list='', _up_pf_color_list='', _up_pf_name='',
+                    _up_pf_name_pos='', _font_size=18, _lvec_color=''):
+    """
+    plot field data or trench velocities
+    """
+    # fig settings
+    primary_fs = _font_size # primary fontsize
+    secondary_fs = 0.85*_font_size # secondary fontsize
+    plt.rc('font', size=primary_fs) # controls default text sizes
+    
+    if _rotated_crs:
+        fig = plt.figure(figsize=(7, 14))
+        proj = ccrs.RotatedPole(pole_latitude=_p_lat, pole_longitude=_p_lon)
+    else:
+        fig = plt.figure(figsize=(20, 10))
+        proj = ccrs.PlateCarree()
+    
+    # axes settings
+    ax = fig.add_subplot(111, projection=proj)
+    ax.set_extent(_ax_set_extent, crs=ccrs.PlateCarree())
+    ax.coastlines(resolution='50m', linewidth=1)
+    
+    # grid settings
+    gl=ax.gridlines(crs=ccrs.PlateCarree(), linewidth=0.2, draw_labels=False, x_inline=False, y_inline=False,)
+    gl.left_labels = _left_labels
+    gl.bottom_labels = _bottom_labels
+    gl.xformatter = LONGITUDE_FORMATTER
+    gl.yformatter = LATITUDE_FORMATTER
+    gl.xlabel_style = {'size': primary_fs} # font_size
+    gl.ylabel_style = {'size': primary_fs} # font_size
+    if _rotated_crs:
+        if _left_labels:
+            gl.xlocator = mticker.FixedLocator(_xlocator)
+            if _xlocator_mod==[90, 100]:
+                gl.bottom_labels = not _bottom_labels
+                gl.xlocator = mticker.FixedLocator(_xlocator_mod) #[90, 100]
+                ax.gridlines(crs=ccrs.PlateCarree(), linewidth=0.2, xlocs=_xlocator)
+        else:
+            if _bottom_labels:
+                if _left_labels:
+                    gl.xlocator = mticker.FixedLocator(_xlocator)
+                    ax.gridlines(crs=ccrs.PlateCarree(), linewidth=0.2, xlocs=_xlocator)
+                else:
+                    gl.xlocator = mticker.FixedLocator(_xlocator_mod)
+                    ax.gridlines(crs=ccrs.PlateCarree(), linewidth=0.2, xlocs=_xlocator)
+            else:
+                gl.xlocator = mticker.FixedLocator(_xlocator)
+            
+        gl.ylocator = mticker.FixedLocator(_ylocator)
+        
+            
+    # plotting ind au plate boundary
+    if len(_plot_ind_aus_pb)!=0:
+        ax.plot(_plot_ind_aus_pb[:,0], _plot_ind_aus_pb[:,1], color='brown', transform=ccrs.PlateCarree(), linewidth=_tlinewidth)
+        
+    # sum trench line and symbols
+    if len(_sum_trench_coords)!=0:
+        ax.plot(_sum_trench_coords[:,0], _sum_trench_coords[:,1], color=_sum_tline_color, transform=ccrs.PlateCarree(), 
+                 linewidth=_tlinewidth)
+        if _sum_tcoords_option==1:
+            sum_marker_coords, sum_marker_angle = get_t_pts_m_angle(_sum_trench_coords)
+            for i, coords in enumerate(sum_marker_coords):
+                if sum_marker_angle[i]<=0:
+                    if _trench_marker=='triangle':
+                        ax.plot(coords[0]+0.2, coords[1]+0.5, '>', marker=(3, 0, sum_marker_angle[i]), markersize=_tmarkersize,
+                                 color=_sum_tline_color, transform=ccrs.PlateCarree())
+                    elif _trench_marker=='square':
+                        ax.plot(coords[0]+0.0, coords[1]+0.5, 's', marker=(4, 0, sum_marker_angle[i]+20), markersize=_tmarkersize, 
+                                markerfacecolor='none', color=_sum_tline_color, transform=ccrs.PlateCarree(),
+                                markeredgewidth=_markerwidth, zorder=10)
+                elif sum_marker_angle[i]>55:
+                    if _trench_marker=='triangle':
+                        ax.plot(coords[0]+0.6, coords[1]+1, '>', marker=(3, 0, sum_marker_angle[i]-45), 
+                                 markersize=_tmarkersize, color=_sum_tline_color, transform=ccrs.PlateCarree())
+                    elif _trench_marker=='square':
+                        ax.plot(coords[0]+0.4, coords[1]+1, 's', marker=(4, 0, sum_marker_angle[i]+20), markersize=_tmarkersize, 
+                                markerfacecolor='none', color=_sum_tline_color, transform=ccrs.PlateCarree(),
+                                markeredgewidth=_markerwidth, zorder=10)
+                elif sum_marker_angle[i]>=0 and sum_marker_angle[i]<=55:
+                    if _trench_marker=='triangle':
+                        ax.plot(coords[0]+0.2, coords[1]+1, '>', marker=(3, 0, sum_marker_angle[i]+135), 
+                                markersize=_tmarkersize, color=_sum_tline_color, transform=ccrs.PlateCarree())
+                    elif _trench_marker=='square':
+                        ax.plot(coords[0]-0.0, coords[1]+1, 's', marker=(4, 0, sum_marker_angle[i]+20), markersize=_tmarkersize, 
+                                markerfacecolor='none', color=_sum_tline_color, transform=ccrs.PlateCarree(), 
+                                markeredgewidth=_markerwidth, zorder=10)
+        # sum trench line symbols
+        if _sum_tcoords_option==2:
+            indx = np.linspace(10, len(_sum_trench_coords)-10, num=10, endpoint=True, dtype=int)
+            tree = spatial.KDTree(_sum_trench_coords)
+            for pts in _sum_trench_coords[indx]:
+                query_data = tree.query(pts, k=4)
+                near_pts = _sum_trench_coords[query_data[1]]
+                slope, intercept, r_value, p_value, std_err = linregress(near_pts[:,0], near_pts[:,1])
+                slope_deg = math.degrees(math.atan(slope))
+                if _trench_marker=='square':
+                    if slope_deg < 2:
+                        ax.plot(pts[0]+0.33, pts[1]+0.4, 's', marker=(4, 0, slope_deg-45), markersize=_tmarkersize, 
+                                color=_sum_tline_color, transform=ccrs.PlateCarree(), markerfacecolor='none', 
+                                markeredgewidth=_markerwidth, zorder=10)
+                    elif slope_deg >= 2:
+                        ax.plot(pts[0]+0.33, pts[1]+0.2, 's', marker=(4, 0, slope_deg-45), markersize=_tmarkersize, 
+                                color=_sum_tline_color, transform=ccrs.PlateCarree(), markerfacecolor='none', 
+                                markeredgewidth=_markerwidth, zorder=10)
+    
+    # him trench line and symbols
+    if len(_him_trench_coords)!=0:
+        ax.plot(_him_trench_coords[:,0], _him_trench_coords[:,1], color=_sum_tline_color, transform=ccrs.PlateCarree(), 
+                 linewidth=_tlinewidth)
+        him_marker_coords, him_marker_angle = get_t_pts_m_angle(_him_trench_coords, _n_pts=5)
+        for i, coords in enumerate(him_marker_coords):
+            if him_marker_angle[i]<=0:
+                if _trench_marker=='triangle':
+                    ax.plot(coords[0]+0.2, coords[1]+0.5, '>', marker=(3, 0, him_marker_angle[i]), 
+                            markersize=_tmarkersize, color=_sum_tline_color, transform=ccrs.PlateCarree())
+                elif _trench_marker=='square':
+                    ax.plot(coords[0]+0.2, coords[1]+0.5, 's', marker=(4, 0, him_marker_angle[i]+45), markersize=_tmarkersize, 
+                            markerfacecolor='none', color=_sum_tline_color, transform=ccrs.PlateCarree(), zorder=10,
+                            markeredgewidth=_markerwidth)
+                    
+    # # plotting model boundary box
+    # if len(_plot_model_box)!=0:
+    #     ax.plot(_plot_model_box[:,0], _plot_model_box[:,1], color='k', transform=ccrs.PlateCarree(), linewidth=2)
+        
+    # # plotting layer or trench data
+    # if _plot_trench_vel:
+    #     # plotting trench velocities
+    #     Q1 = ax.quiver(_trench_coords_vel[:,0][::_tvec_freq], _trench_coords_vel[:,1][::_tvec_freq], 
+    #                    _trench_coords_vel[:,2][::_tvec_freq], _trench_coords_vel[:,3][::_tvec_freq], 
+    #                    scale=_tvec_scale, width=0.004, zorder=3, transform=ccrs.PlateCarree(), )
+    #     qk1 = ax.quiverkey(Q1, _quiverkey_loc[0], _quiverkey_loc[1], 10, "10 mm/yr", coordinates='figure', color='k', 
+    #                        zorder=10)
+        
+    #     # adding patch around quiverkey
+    #     rect1 = patches.Rectangle((_ref_vec_patch_loc[0], _ref_vec_patch_loc[1]), _ref_vec_patch_loc[2], 
+    #                               _ref_vec_patch_loc[3], alpha=0.5, ec='k', fc="white", linewidth=2, zorder=3, 
+    #                               transform=ax.transAxes,)
+    #     ax.add_patch(rect1)
+        
+    #     # plotting trench velocities original data
+    #     if len(_trench_coords_vel_orig)!=0:
+    #         Q2 = ax.quiver(_trench_coords_vel_orig[:,0][::_tvec_freq], _trench_coords_vel_orig[:,1][::_tvec_freq], 
+    #                        _trench_coords_vel_orig[:,3][::_tvec_freq], _trench_coords_vel_orig[:,4][::_tvec_freq], 
+    #                        scale=_tvec_scale, width=0.004, zorder=3, transform=ccrs.PlateCarree(), color='b')
+    # else:
+    #     # plotting layer data
+    #     if len(_cb_bounds)!=0:
+    #         bounds = _cb_bounds # uneven bounds changes the colormapping
+    #         norm = colors.BoundaryNorm(boundaries=bounds, ncolors=256)
+    #         im1 = ax.scatter(_layer_coords[:,0][::_ldata_freq], _layer_coords[:,1][::_ldata_freq], s=_plot_markersize, 
+    #                          c=_layer_data[::_ldata_freq], marker='H', cmap=_colormap, #vmin=_vmin, vmax=_vmax, 
+    #                          zorder=1, transform=ccrs.PlateCarree(), norm=norm)
+    #     else:
+    #         im1 = ax.scatter(_layer_coords[:,0][::_ldata_freq], _layer_coords[:,1][::_ldata_freq], s=_plot_markersize, 
+    #                          c=_layer_data[::_ldata_freq], marker='H', cmap=_colormap, vmin=_vmin, vmax=_vmax, 
+    #                          zorder=1, transform=ccrs.PlateCarree())
+        
+    #     # colorbar settings
+    #     if _cb_display:
+    #         cax = plt.axes(_cb_pos) # [left, bottom, width, height]
+    #         cb = plt.colorbar(im1, cax, orientation='horizontal')
+    #         if len(_cb_ticklabels)!=0:
+    #             cb.ax.set_xticklabels(_cb_ticklabels) # set ticks of your format
+    #         cb.ax.set_title(_cb_axis_label, fontsize=primary_fs, x=_cb_label_xpos, y=_cb_label_ypos) # font_size
+    
+    # plotting velocity vectors in layer 
+    if len(_layer_vel)!=0:
+        Q1 = ax.quiver(_layer_coords[:,0][::_lvec_freq], _layer_coords[:,1][::_lvec_freq], 
+                       _layer_vel[:,0][::_lvec_freq], _layer_vel[:,1][::_lvec_freq], 
+                       scale=_lvec_scale, zorder=10, transform=ccrs.PlateCarree(), 
+                       color=_lvec_color, headwidth=1, headlength=0)
+        Q2 = ax.quiver(_layer_coords[:,0][::_lvec_freq], _layer_coords[:,1][::_lvec_freq], 
+                       -_layer_vel[:,0][::_lvec_freq], -_layer_vel[:,1][::_lvec_freq], 
+                       scale=_lvec_scale, zorder=10, transform=ccrs.PlateCarree(), 
+                       color=_lvec_color, headwidth=1, headlength=0)
+    #     qk1 = ax.quiverkey(Q1, _quiverkey_loc[0], _quiverkey_loc[1], 50, "50 mm/yr", coordinates='figure', color='k', 
+    #                        zorder=10)
+    #     # adding patch around quiverkey
+    #     rect1 = patches.Rectangle((_ref_vec_patch_loc[0], _ref_vec_patch_loc[1]), _ref_vec_patch_loc[2], 
+    #                               _ref_vec_patch_loc[3], alpha=0.5, ec='k', fc="white", linewidth=2, zorder=3, 
+    #                               transform=ax.transAxes,)
+    #     ax.add_patch(rect1)
+    
+    # plotting contours
+    if len(_contour_data)!=0:    
+        im2 = ax.contour(_contour_data['lon'], _contour_data['lat'], -_contour_data['data'], levels=_contour_levels, 
+                         transform=ccrs.PlateCarree(), cmap=_contour_cmap, vmin=_ctr_vmin, vmax=_ctr_vmax, linewidths=3)
+        ax.clabel(im2, inline=True, fontsize=primary_fs, fmt='%3d', inline_spacing=-1) # font_size
+        
+    # # parameter value display
+    # if len(_parameter_patch_loc)!=0: 
+    #     ax.text(_parameter_patch_loc[0], _parameter_patch_loc[1], _parameter, horizontalalignment='center', 
+    #             fontsize=primary_fs, transform=ax.transAxes, color=_par_color,
+    #             bbox=dict(facecolor='none', edgecolor='k', boxstyle='round, pad=0.2', alpha=1.0, fc="white")) # font_size
+    
+    # # figure label
+    # if len(_fig_label)!=0: 
+    #     ax.text(_fig_label_x, _fig_label_y, _fig_label, color='k', fontsize=primary_fs, transform=ax.transAxes,
+    #             bbox=dict(facecolor='none', edgecolor='k', boxstyle='round, pad=0.2', alpha=1.0, fc="white")) # font_size
+         
+    # ax.tick_params(axis='both', direction='in',) # turn tickmarks inward
+    # plt.subplots_adjust(left=0.175, right=0.9, bottom=0.12, top=0.88, wspace=None, hspace=None) # make sure all fig are same size               
+    
+    # # Plot UP pf coords
+    # if len(_up_pf_list)!=0:
+    #     for i, pf_coords in enumerate(_up_pf_list):
+    #         ax.plot(pf_coords[:,0], pf_coords[:,1], color=_up_pf_color_list[i], linewidth=2, transform=ccrs.PlateCarree())
+    #         ax.plot(pf_coords[0][0], pf_coords[0][1], color='g', marker='o', markersize=12, transform=ccrs.PlateCarree())
+    #         ax.plot(pf_coords[-1][0], pf_coords[-1][1], color='r', marker='o', markersize=12, transform=ccrs.PlateCarree())
+    #         ax.plot(pf_coords[_tip_indx_list[i][0]][0], pf_coords[_tip_indx_list[i][0]][1], color='b', marker='X', markersize=12, transform=ccrs.PlateCarree())
+    #         ax.plot(pf_coords[_tip_indx_list[i][1]][0], pf_coords[_tip_indx_list[i][1]][1], color='b', marker='X', markersize=12, transform=ccrs.PlateCarree())
+    #         ax.text(pf_coords[0][0]+_up_pf_name_pos[i][0], pf_coords[0][1]+_up_pf_name_pos[i][1], _up_pf_name[i], color=_up_pf_color_list[i], fontsize=primary_fs, 
+    #                 transform=ccrs.PlateCarree(), bbox=dict(facecolor='none', edgecolor='k', boxstyle='round, pad=0.2', alpha=1.0, fc="white")) # font_size
+    # saving the plot
+    if _fformat=='eps':
+        fig.savefig(_output_path+_fname+"."+_fformat, format=_fformat, bbox_inches='tight')
+    elif _fformat=='png':
+        fig.savefig(_output_path+_fname+"."+_fformat, dpi=_dpi, bbox_inches='tight')
+    elif _fformat=='pdf':
+        fig.savefig(_output_path+_fname+"."+_fformat, format=_fformat, bbox_inches='tight')
+    elif _fformat=='ps':
+        fig.savefig(_output_path+_fname+"."+_fformat, format=_fformat, bbox_inches='tight', transparent=True)
+        
+    # save the colorbar separately
+    if _cb_save: # vertical colorbar
+        plt.figure(figsize=_figsize_cb)
+        plt.rc('font', size=primary_fs) # font_size
+        if len(_cb_bounds)!=0:
+            a = np.array([bounds])
+            img = plt.imshow(a, cmap=_colormap, norm=norm)
+        else:
+            a = np.array([[_vmin,_vmax]])
+            img = plt.imshow(a, cmap=_colormap)
+            
+        plt.gca().set_visible(False)
+        if _cb_orient=='vertical':
+            cax = plt.axes([0.1, 0.2, 0.06, 1.15])
+            cb = plt.colorbar(orientation='vertical', cax=cax)
+            cb.ax.set_title(_cb_axis_label, fontsize=primary_fs, x=_cb_label_xpos, y=_cb_label_ypos, rotation=90) # font_size
+            if _fformat=='png':
+                plt.savefig(_output_path+_fname+'_cbvert.'+_fformat, dpi=150, bbox_inches='tight')
+            elif _fformat=='pdf':
+                plt.savefig(_output_path+_fname+"_cbvert."+_fformat, format=_fformat, bbox_inches='tight')
+        if _cb_orient=='horizontal':
+            cax = plt.axes([0.1, 0.2, 1.15, 0.06])
+            cb = plt.colorbar(orientation='horizontal', cax=cax)
+            cb.ax.set_title(_cb_axis_label, fontsize=primary_fs, x=_cb_label_xpos, y=_cb_label_ypos) # font_size
+            if _fformat=='png':
+                plt.savefig(_output_path+_fname+'_cbhorz.'+_fformat, dpi=150, bbox_inches='tight')
+            elif _fformat=='pdf':
+                plt.savefig(_output_path+_fname+"_cbhorz."+_fformat, format=_fformat, bbox_inches='tight')
+    return
+
+# +
+# plot settings
+ax_extent_rot = [100, 107, -17.5, 19.4]
+
+# rotation pole coordinates
+p_lat=115 
+p_lon=180
+
+left_labels, bottom_labels = True, True
+
+xlocator_mod = [110, 120]
+# -
+
+# contour data and settings
+slab_dep_path = '/Users/tgol0006/phd_tg/PhD_TG/data_sets/Slab2_AComprehe/Slab2Distribute_Mar2018/'
+sum_slab_dep = load_nc_file(slab_dep_path+'sum_slab2_dep_02.23.18.grd')
+contour_levels = [90, 200, 400, 600]
+ctr_cb_ticks = [90, 200, 400, 600]
+contour_cmap = mpl.cm.viridis # scm.turku
+ctr_vmin=0
+ctr_vmax=660
+
+# plate boundary dataset
+pb_path = '/Users/tgol0006/phd_tg/phd_b2023/model_shapes_3d/make_boundary_pts/output_dir/'
+sum_tcoords_orig = np.loadtxt(pb_path+'sum_trench_coords.txt', delimiter=',')
+
+# base plot
+plot_field_data(_p_lat=p_lat, _p_lon=p_lon, _ax_set_extent=ax_extent_rot, _rotated_crs=True,
+                _left_labels=left_labels, _bottom_labels=bottom_labels, _xlocator_mod=xlocator_mod,
+                _sum_trench_coords=sum_tcoords_orig, _trench_marker='square', _markerwidth=3, _tmarkersize=18, 
+                _sum_tcoords_option=1, _tlinewidth=4,
+                _contour_data='', _contour_levels=contour_levels, _contour_cmap=contour_cmap, _ctr_vmin=ctr_vmin, 
+                _ctr_vmax=ctr_vmax,
+                _output_path=output_dir, _fname='model3c_shmax_along_trench', _fformat='pdf', 
+                _layer_coords=resam_surface_glld[:,0:2], _layer_vel=rotate_vec_arr(resampled_mesh['SHmax'][:,0:2], rotate_angle), 
+                _lvec_color=resampled_mesh['style_color'], _lvec_scale=75)
+
+# +
+# Convert to 3D (z = 0)
+points = np.hstack([sum_trench_coords, np.zeros((sum_trench_coords.shape[0], 1))])
+
+# Create line
+n_points = points.shape[0]
+lines = np.hstack([[n_points], np.arange(n_points)])
+
+polyline = pv.PolyData()
+polyline.points = points
+polyline.lines = lines
+
+# Create a spline to smooth it (optional)
+spline = Spline(polyline.points, n_points=90)
+
+# Compute tangents
+spline_tangents = np.gradient(spline.points, axis=0)
+
+# Compute normals in the XY plane (2D cross product with Z unit vector)
+# 2D normal = (-dy, dx)
+tangents_xy = spline_tangents[:, :2]
+normals_xy = np.zeros_like(tangents_xy)
+normals_xy[:, 0] = -tangents_xy[:, 1]
+normals_xy[:, 1] = tangents_xy[:, 0]
+
+# Normalize
+norms = np.linalg.norm(normals_xy, axis=1, keepdims=True)
+normals_xy = normals_xy / norms
+
+# Add Z = 0 back
+normals = np.hstack([normals_xy, np.zeros((normals_xy.shape[0], 1))])
+
+# Offset the spline points by some distance along normals
+distance = 4  # degrees (lon/lat) or km if projected
+offset_points = spline.points + distance * normals
+
+# Create offset line
+offset_line = pv.PolyData()
+offset_line.points = offset_points
+offset_line.lines = np.hstack([[offset_points.shape[0]], np.arange(offset_points.shape[0])])
+
+# Plot original and offset lines
+pl = pv.Plotter()
+pl.add_mesh(spline, color='k', line_width=3, label='Original Line')
+pl.add_mesh(offset_line, color='darkgreen', line_width=3, label='Offset Line')
+pl.add_legend()
+pl.show(cpos='xy')
+# -
+
+# Get only the XY (2D) part for polygon creation
+poly_points = np.vstack([points[:, :2], offset_points[::-1, :2]])
+polygon_path = Path(poly_points) # Create polygon path
+inside_poly = polygon_path.contains_points(resam_surface_glld[:, 0:2])  # boolean array
+
+# base plot
+plot_field_data(_p_lat=p_lat, _p_lon=p_lon, _ax_set_extent=ax_extent_rot, _rotated_crs=True,
+                _left_labels=left_labels, _bottom_labels=bottom_labels, _xlocator_mod=xlocator_mod,
+                _sum_trench_coords=sum_tcoords_orig, _trench_marker='square', _markerwidth=3, _tmarkersize=18, 
+                _sum_tcoords_option=1, _tlinewidth=4,
+                _contour_data='', _contour_levels=contour_levels, _contour_cmap=contour_cmap, _ctr_vmin=ctr_vmin, 
+                _ctr_vmax=ctr_vmax,
+                _output_path=output_dir, _fname='model3c_shmax_along_trench_arc', _fformat='pdf', 
+                _layer_coords=resam_surface_glld[:,0:2][inside_poly], _layer_vel=rotate_vec_arr(resampled_mesh['SHmax'][:,0:2][inside_poly], rotate_angle), 
+                _lvec_color=resampled_mesh['style_color'][inside_poly], _lvec_scale=50)
 
 

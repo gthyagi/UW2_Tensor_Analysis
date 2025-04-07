@@ -774,7 +774,7 @@ color_list = [resampled_mesh['style_color']]
 plot_field_data_bmrot(_rotated_crs=True, _p_lon=p_lon, _p_lat=p_lat, _ax_set_extent=ax_extent_rot, _left_labels=left_labels, _bottom_labels=bottom_labels, 
                       _xlabel_size=18, _ylabel_size=18, _xlocator=[60, 80, 100, 120], _ylocator=[-20, 0, 20, 40], _xlocator_mod='', _plot_ind_aus_pb=ind_aus_pb_coords, 
                       _tlinewidth=3, _sum_trench_coords=sum_trench_coords, _sum_tline_color='C4', _trench_marker='square', _tmarkersize=18, _markerwidth=2, 
-                      _him_trench_coords=him_trench_coords, _layer_coords_vel_list=layer_coords_vel_list, _rotate_angle_list=rotate_angle_list, _lvec_freq=1, 
+                      _him_trench_coords=him_trench_coords, _layer_coords_vel_list=layer_coords_vel_list, _rotate_angle_list=[rotate_angle], _lvec_freq=1, 
                       _lvec_scale=75, _lvec_width=0.007, _lvec_color_list=color_list, _lvec_label_name='', _regrid_num=0, _ref_vec_patch_loc='', 
                       _lvec_legend_loc=1, _lvec_legend_col=1, _lvec_legend_title='', _model_bbox_list=model_bbox_list, _bbox_color_list=['cyan', 'k'],
                       _parameter_patch_loc='', _parameter='', _fig_label='', _fig_label_size=18, _output_path=output_dir, _fname='model3c_shmax', 
@@ -1000,11 +1000,11 @@ def plot_field_data(_layer_coords='', _layer_data='', _ldata_freq='', _layer_vel
                          transform=ccrs.PlateCarree(), cmap=_contour_cmap, vmin=_ctr_vmin, vmax=_ctr_vmax, linewidths=3)
         ax.clabel(im2, inline=True, fontsize=primary_fs, fmt='%3d', inline_spacing=-1) # font_size
         
-    # # parameter value display
-    # if len(_parameter_patch_loc)!=0: 
-    #     ax.text(_parameter_patch_loc[0], _parameter_patch_loc[1], _parameter, horizontalalignment='center', 
-    #             fontsize=primary_fs, transform=ax.transAxes, color=_par_color,
-    #             bbox=dict(facecolor='none', edgecolor='k', boxstyle='round, pad=0.2', alpha=1.0, fc="white")) # font_size
+    # parameter value display
+    if len(_parameter_patch_loc)!=0: 
+        ax.text(_parameter_patch_loc[0], _parameter_patch_loc[1], _parameter, horizontalalignment='center', 
+                fontsize=primary_fs, transform=ax.transAxes, color=_par_color,
+                bbox=dict(facecolor='none', edgecolor='k', boxstyle='round, pad=0.2', alpha=1.0, fc="white")) # font_size
     
     # # figure label
     # if len(_fig_label)!=0: 
@@ -1142,12 +1142,12 @@ offset_line = pv.PolyData()
 offset_line.points = offset_points
 offset_line.lines = np.hstack([[offset_points.shape[0]], np.arange(offset_points.shape[0])])
 
-# Plot original and offset lines
-pl = pv.Plotter()
-pl.add_mesh(spline, color='k', line_width=3, label='Original Line')
-pl.add_mesh(offset_line, color='darkgreen', line_width=3, label='Offset Line')
-pl.add_legend()
-pl.show(cpos='xy')
+# # Plot original and offset lines
+# pl = pv.Plotter()
+# pl.add_mesh(spline, color='k', line_width=3, label='Original Line')
+# pl.add_mesh(offset_line, color='darkgreen', line_width=3, label='Offset Line')
+# pl.add_legend()
+# pl.show(cpos='xy')
 # -
 
 # Get only the XY (2D) part for polygon creation
@@ -1155,15 +1155,19 @@ poly_points = np.vstack([points[:, :2], offset_points[::-1, :2]])
 polygon_path = Path(poly_points) # Create polygon path
 inside_poly = polygon_path.contains_points(resam_surface_glld[:, 0:2])  # boolean array
 
+parameter_patch_loc=[0.86, 0.96]
+parameter = 'Model3c'
+
 # base plot
 plot_field_data(_p_lat=p_lat, _p_lon=p_lon, _ax_set_extent=ax_extent_rot, _rotated_crs=True,
                 _left_labels=left_labels, _bottom_labels=bottom_labels, _xlocator_mod=xlocator_mod,
                 _sum_trench_coords=sum_tcoords_orig, _trench_marker='square', _markerwidth=3, _tmarkersize=18, 
                 _sum_tcoords_option=1, _tlinewidth=4,
-                _contour_data='', _contour_levels=contour_levels, _contour_cmap=contour_cmap, _ctr_vmin=ctr_vmin, 
-                _ctr_vmax=ctr_vmax,
+                _contour_data=sum_slab_dep, _contour_levels=contour_levels, _contour_cmap=contour_cmap, _ctr_vmin=ctr_vmin, _ctr_vmax=ctr_vmax,
                 _output_path=output_dir, _fname='model3c_shmax_along_trench_arc', _fformat='pdf', 
                 _layer_coords=resam_surface_glld[:,0:2][inside_poly], _layer_vel=rotate_vec_arr(resampled_mesh['SHmax'][:,0:2][inside_poly], rotate_angle), 
-                _lvec_color=resampled_mesh['style_color'][inside_poly], _lvec_scale=50)
+                _lvec_color=resampled_mesh['style_color'][inside_poly], _lvec_scale=50, 
+                _parameter=parameter, _parameter_patch_loc=parameter_patch_loc, _par_color='C2')
+
 
 

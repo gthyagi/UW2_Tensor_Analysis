@@ -60,6 +60,10 @@ file_no = '00001'
 
 # dimensions for the analysis
 dim = 2
+
+# depth of the surface
+dep = 50
+radius = (6371. - dep)/6371.
 # -
 
 # #### Read mesh data and create pyvista mesh
@@ -146,7 +150,7 @@ def compute_stress_second_invariant(stress_comps):
 
 # Compute radius array
 radius_arr = np.linalg.norm(grid.points, axis=1)
-surface_mask = np.abs(radius_arr - 1.0) < 1e-6 # tolerance depends on radial resolution
+surface_mask = np.abs(radius_arr - radius) < 1e-6 # tolerance depends on radial resolution
 surface_points = grid.points[surface_mask]
 surface_stress_comps = np.hstack((stress_D, stress_ND))[surface_mask]
 surface = pv.PolyData(surface_points) # Create PolyData (no connectivity, point cloud)
@@ -777,7 +781,7 @@ plot_field_data_bmrot(_rotated_crs=True, _p_lon=p_lon, _p_lat=p_lat, _ax_set_ext
                       _him_trench_coords=him_trench_coords, _layer_coords_vel_list=layer_coords_vel_list, _rotate_angle_list=[rotate_angle], _lvec_freq=1, 
                       _lvec_scale=75, _lvec_width=0.007, _lvec_color_list=color_list, _lvec_label_name='', _regrid_num=0, _ref_vec_patch_loc='', 
                       _lvec_legend_loc=1, _lvec_legend_col=1, _lvec_legend_title='', _model_bbox_list=model_bbox_list, _bbox_color_list=['cyan', 'k'],
-                      _parameter_patch_loc='', _parameter='', _fig_label='', _fig_label_size=18, _output_path=output_dir, _fname='model3c_shmax', 
+                      _parameter_patch_loc='', _parameter='', _fig_label='', _fig_label_size=18, _output_path=output_dir, _fname=f'model3c_shmax_dep_{dep}', 
                       _fformat='pdf', _dpi=150,)
 
 
@@ -1097,7 +1101,7 @@ plot_field_data(_p_lat=p_lat, _p_lon=p_lon, _ax_set_extent=ax_extent_rot, _rotat
                 _sum_tcoords_option=1, _tlinewidth=4,
                 _contour_data='', _contour_levels=contour_levels, _contour_cmap=contour_cmap, _ctr_vmin=ctr_vmin, 
                 _ctr_vmax=ctr_vmax,
-                _output_path=output_dir, _fname='model3c_shmax_along_trench', _fformat='pdf', 
+                _output_path=output_dir, _fname=f'model3c_shmax_along_trench_dep_{dep}', _fformat='pdf', 
                 _layer_coords=resam_surface_glld[:,0:2], _layer_vel=rotate_vec_arr(resampled_mesh['SHmax'][:,0:2], rotate_angle), 
                 _lvec_color=resampled_mesh['style_color'], _lvec_scale=75)
 
@@ -1164,7 +1168,7 @@ plot_field_data(_p_lat=p_lat, _p_lon=p_lon, _ax_set_extent=ax_extent_rot, _rotat
                 _sum_trench_coords=sum_tcoords_orig, _trench_marker='square', _markerwidth=3, _tmarkersize=18, 
                 _sum_tcoords_option=1, _tlinewidth=4,
                 _contour_data=sum_slab_dep, _contour_levels=contour_levels, _contour_cmap=contour_cmap, _ctr_vmin=ctr_vmin, _ctr_vmax=ctr_vmax,
-                _output_path=output_dir, _fname='model3c_shmax_along_trench_arc', _fformat='pdf', 
+                _output_path=output_dir, _fname=f'model3c_shmax_along_trench_arc_dep_{dep}', _fformat='pdf', 
                 _layer_coords=resam_surface_glld[:,0:2][inside_poly], _layer_vel=rotate_vec_arr(resampled_mesh['SHmax'][:,0:2][inside_poly], rotate_angle), 
                 _lvec_color=resampled_mesh['style_color'][inside_poly], _lvec_scale=50, 
                 _parameter=parameter, _parameter_patch_loc=parameter_patch_loc, _par_color='C2')

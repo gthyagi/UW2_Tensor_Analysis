@@ -981,7 +981,7 @@ def plot_field_data(_layer_coords='', _layer_data='', _ldata_freq='', _layer_vel
             sm = ScalarMappable(norm=norm, cmap=_lvec_cb)
             sm.set_array([])
             
-            cbar = plt.colorbar(sm, ax=ax, orientation='vertical', label='Angle (°)', shrink=0.6, aspect=20)
+            cbar = plt.colorbar(sm, ax=ax, orientation='vertical', label='Misfit angle (°)', shrink=0.6, aspect=20)
             
             # divider = make_axes_locatable(ax)
             # cax = divider.append_axes("right", size="5%", pad=0.05)  # size can be %, e.g. "5%" or fixed, e.g. 0.2
@@ -1127,16 +1127,17 @@ plot_field_data(_p_lat=p_lat, _p_lon=p_lon, _ax_set_extent=ax_extent_rot, _rotat
 
 # +
 # megathrust earthquake data
-mthrust_data_df = pd.read_csv('./p_axis_data_jc/sum_megathrust.csv', delimiter=',')
-mthrust_data_df = mthrust_data_df[mthrust_data_df['EQ_TYPE'] != 'ODD'].reset_index(drop=True)
+mthrust_df = pd.read_csv('./p_axis_data_jc/sum_megathrust.csv', delimiter=',')
+mthrust_df = mthrust_df[mthrust_df['EQ_TYPE'] != 'ODD'].reset_index(drop=True)
 
 # Convert azimuth from degrees to radians
-azimuth_deg = mthrust_data_df['P_AZM']
-azimuth_rad = np.deg2rad(azimuth_deg)
+azm_deg = mthrust_df['P_AZM']
+azm_rad = np.deg2rad(azimuth_deg)
+p_axis_vec = np.stack((np.sin(azm_rad), np.cos(azm_rad)), axis=1)
 
 # Create RGB color array (float, 0–1) for each point
-eq_style_str = mthrust_data_df['EQ_TYPE']
-N = mthrust_data_df['EQ_TYPE'].shape[0]
+eq_style_str = mthrust_df['EQ_TYPE']
+N = mthrust_df['EQ_TYPE'].shape[0]
 eq_colors = np.zeros((N, 3))  # shape (N, 3)
 
 for i in range(N):
@@ -1158,15 +1159,15 @@ plot_field_data(_p_lat=p_lat, _p_lon=p_lon, _ax_set_extent=ax_extent_rot, _rotat
                 _contour_data=sum_slab_dep, _contour_levels=contour_levels, _contour_cmap=contour_cmap, _ctr_vmin=ctr_vmin, 
                 _ctr_vmax=ctr_vmax,
                 _output_path=output_dir, _fname=f'mthrust_eq_p_axis', _fformat='pdf', 
-                _layer_coords=mthrust_data_df[['LON', 'LAT']].to_numpy(), 
-                _layer_vel=np.stack((np.sin(azimuth_rad), np.cos(azimuth_rad)), axis=1),
+                _layer_coords=mthrust_df[['LON', 'LAT']].to_numpy(), 
+                _layer_vel=p_axis_vec,
                 #rotate_vec_arr(subset_mesh['SHmax'][:,0:2], rotate_angle), 
                 _lvec_color=eq_colors, _lvec_scale=25, _lvec_freq=1, _quiver_width=0.007)
 
 # +
 # Convert source and query data to numpy arrays
 source_points = rotate_arr(data[['Longitude', 'Latitude', 'Depth']].to_numpy(), rotate_angle, tc)
-query_points = mthrust_data_df[['LON', 'LAT', 'DEPTH']].to_numpy()
+query_points = mthrust_df[['LON', 'LAT', 'DEPTH']].to_numpy()
 
 # Build KDTree from source points
 tree = KDTree(source_points)
@@ -1182,15 +1183,16 @@ plot_field_data(_p_lat=p_lat, _p_lon=p_lon, _ax_set_extent=ax_extent_rot, _rotat
                 _sum_tcoords_option=1, _tlinewidth=4,
                 _contour_data=sum_slab_dep, _contour_levels=contour_levels, _contour_cmap=contour_cmap, _ctr_vmin=ctr_vmin, 
                 _ctr_vmax=ctr_vmax,
-                _output_path=output_dir, _fname=f'model3c_close_eq_data', _fformat='pdf', 
+                _output_path=output_dir, _fname=f'model3c_inf_close_eq_data', _fformat='pdf', 
                 _layer_coords=source_points[indices][:,0:2], 
                 _layer_vel=rotate_vec_arr(surface_mesh['SHmax'][indices][:,0:2], rotate_angle), 
                 _lvec_color=surface_mesh['style_color'][indices], _lvec_scale=25, _lvec_freq=1, _quiver_width=0.007)
 
-v1 = np.stack((np.sin(azimuth_rad), np.cos(azimuth_rad)), axis=1)  # from azimuth
+# +
+# calculate angle between model and observed p axis
+v1 = p_axis_vec
 v2 = rotate_vec_arr(surface_mesh['SHmax'][indices][:, 0:2], rotate_angle)  # rotated vectors
 
-# +
 # Normalize both vectors
 v1_norm = v1 / np.linalg.norm(v1, axis=1, keepdims=True)
 v2_norm = v2 / np.linalg.norm(v2, axis=1, keepdims=True)
@@ -1202,9 +1204,13 @@ dot_prod = np.clip(dot_prod, -1.0, 1.0)
 # Compute angle in radians, then convert to degrees
 angles_rad = np.arccos(dot_prod)
 angles_deg = np.degrees(angles_rad)
+
+print(angles_deg.min(), angles_deg.max())
 # -
 
-angles_deg.min(), angles_deg.max()
+# parameter
+parameter_patch_loc=[0.4, 0.02]
+parameter = f'Mean angular misfit={np.round(np.mean(angles_deg), 1)}{chr(176)}'
 
 # base plot
 plot_field_data(_p_lat=p_lat, _p_lon=p_lon, _ax_set_extent=ax_extent_rot, _rotated_crs=True,
@@ -1214,12 +1220,11 @@ plot_field_data(_p_lat=p_lat, _p_lon=p_lon, _ax_set_extent=ax_extent_rot, _rotat
                 _contour_data=sum_slab_dep, _contour_levels=contour_levels, _contour_cmap=contour_cmap, _ctr_vmin=ctr_vmin, 
                 _ctr_vmax=ctr_vmax,
                 _output_path=output_dir, _fname=f'mthrust_eq_p_axis_with_error_angle', _fformat='pdf', 
-                _layer_coords=mthrust_data_df[['LON', 'LAT']].to_numpy(), 
-                _layer_vel=np.stack((np.sin(azimuth_rad), np.cos(azimuth_rad)), axis=1),
+                _layer_coords=mthrust_df[['LON', 'LAT']].to_numpy(), 
+                _layer_vel=p_axis_vec,
                 _lvec_color=eq_colors, _lvec_scale=25, _lvec_freq=1, _quiver_width=0.007,
                 _angle_data=angles_deg, _lvec_cb=cm.hawaii.resampled(16), _vmin=0, _vmax=40, 
-                _model_vel=rotate_vec_arr(surface_mesh['SHmax'][indices][:,0:2], rotate_angle))
-
-output_dir
+                _model_vel=rotate_vec_arr(surface_mesh['SHmax'][indices][:,0:2], rotate_angle), 
+                _parameter=parameter, _parameter_patch_loc=parameter_patch_loc, _par_color='k')
 
 

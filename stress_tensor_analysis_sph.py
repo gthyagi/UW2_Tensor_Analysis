@@ -15,6 +15,7 @@ from pyvista import CellType
 from pyvista import Spline
 from matplotlib.path import Path
 
+# +
 import math
 from scipy import spatial
 from scipy.stats import linregress
@@ -33,6 +34,12 @@ import matplotlib.ticker as mticker
 import copy
 import transform_data_coords as tds
 from netCDF4 import Dataset
+import pandas as pd
+
+# Colorbar with vmin/vmax set correctly
+from matplotlib.cm import ScalarMappable
+from matplotlib.colors import Normalize
+from mpl_toolkits.axes_grid1 import make_axes_locatable
 
 # +
 # Suppress specific warnings
@@ -62,7 +69,7 @@ file_no = '00001'
 dim = 2
 
 # depth of the surface
-dep = 50
+dep = 0
 radius = (6371. - dep)/6371.
 # -
 
@@ -816,7 +823,7 @@ def plot_field_data(_layer_coords='', _layer_data='', _ldata_freq='', _layer_vel
                     _dpi=150, _cb_orient='vertical', _sum_tcoords_option=2, _markerwidth=2, _tmarkersize='', 
                     _tlinewidth=2, _xlocator_mod='', _par_color='', _contour_data='', _contour_levels='', _contour_cmap='', 
                     _ctr_vmin='', _ctr_vmax='', _up_pf_list='', _tip_indx_list='', _up_pf_color_list='', _up_pf_name='',
-                    _up_pf_name_pos='', _font_size=18, _lvec_color=''):
+                    _up_pf_name_pos='', _font_size=18, _lvec_color='', _quiver_width=0.005, _angle_data='', _lvec_cb=None, _model_vel=''):
     """
     plot field data or trench velocities
     """
@@ -982,14 +989,50 @@ def plot_field_data(_layer_coords='', _layer_data='', _ldata_freq='', _layer_vel
     
     # plotting velocity vectors in layer 
     if len(_layer_vel)!=0:
-        Q1 = ax.quiver(_layer_coords[:,0][::_lvec_freq], _layer_coords[:,1][::_lvec_freq], 
-                       _layer_vel[:,0][::_lvec_freq], _layer_vel[:,1][::_lvec_freq], 
-                       scale=_lvec_scale, zorder=10, transform=ccrs.PlateCarree(), 
-                       color=_lvec_color, headwidth=1, headlength=0)
-        Q2 = ax.quiver(_layer_coords[:,0][::_lvec_freq], _layer_coords[:,1][::_lvec_freq], 
-                       -_layer_vel[:,0][::_lvec_freq], -_layer_vel[:,1][::_lvec_freq], 
-                       scale=_lvec_scale, zorder=10, transform=ccrs.PlateCarree(), 
-                       color=_lvec_color, headwidth=1, headlength=0)
+        if _lvec_cb!=None:
+            norm = Normalize(vmin=_vmin, vmax=_vmax)
+            
+            Q1 = ax.quiver(_layer_coords[:,0][::_lvec_freq], _layer_coords[:,1][::_lvec_freq], 
+                           _layer_vel[:,0][::_lvec_freq], _layer_vel[:,1][::_lvec_freq],
+                           _angle_data,
+                           scale=_lvec_scale, zorder=10, transform=ccrs.PlateCarree(), 
+                           cmap=_lvec_cb, norm=norm,
+                           headwidth=1, headlength=0, width=_quiver_width)
+            Q2 = ax.quiver(_layer_coords[:,0][::_lvec_freq], _layer_coords[:,1][::_lvec_freq], 
+                           -_layer_vel[:,0][::_lvec_freq], -_layer_vel[:,1][::_lvec_freq],
+                           _angle_data,
+                           scale=_lvec_scale, zorder=10, transform=ccrs.PlateCarree(), 
+                           cmap=_lvec_cb, norm=norm,
+                           headwidth=1, headlength=0, width=_quiver_width)
+            
+            sm = ScalarMappable(norm=norm, cmap=_lvec_cb)
+            sm.set_array([])
+            
+            cbar = plt.colorbar(sm, ax=ax, orientation='vertical', label='Misfit angle (°)', shrink=0.6, aspect=20)
+            
+            # divider = make_axes_locatable(ax)
+            # cax = divider.append_axes("right", size="5%", pad=0.05)  # size can be %, e.g. "5%" or fixed, e.g. 0.2
+            # cbar = plt.colorbar(sm, cax=cax, orientation='vertical')
+
+            if len(_model_vel)!=0:
+                Q1 = ax.quiver(_layer_coords[:,0][::_lvec_freq], _layer_coords[:,1][::_lvec_freq], 
+                               _model_vel[:,0][::_lvec_freq], _model_vel[:,1][::_lvec_freq], 
+                               scale=_lvec_scale, zorder=8, transform=ccrs.PlateCarree(), 
+                               color='grey', headwidth=1, headlength=0, width=_quiver_width, alpha=0.75)
+                Q2 = ax.quiver(_layer_coords[:,0][::_lvec_freq], _layer_coords[:,1][::_lvec_freq], 
+                               -_model_vel[:,0][::_lvec_freq], -_model_vel[:,1][::_lvec_freq], 
+                               scale=_lvec_scale, zorder=8, transform=ccrs.PlateCarree(), 
+                               color='grey', headwidth=1, headlength=0, width=_quiver_width, alpha=0.75)
+            
+        else:
+            Q1 = ax.quiver(_layer_coords[:,0][::_lvec_freq], _layer_coords[:,1][::_lvec_freq], 
+                           _layer_vel[:,0][::_lvec_freq], _layer_vel[:,1][::_lvec_freq], 
+                           scale=_lvec_scale, zorder=10, transform=ccrs.PlateCarree(), 
+                           color=_lvec_color, headwidth=1, headlength=0, width=_quiver_width)
+            Q2 = ax.quiver(_layer_coords[:,0][::_lvec_freq], _layer_coords[:,1][::_lvec_freq], 
+                           -_layer_vel[:,0][::_lvec_freq], -_layer_vel[:,1][::_lvec_freq], 
+                           scale=_lvec_scale, zorder=10, transform=ccrs.PlateCarree(), 
+                           color=_lvec_color, headwidth=1, headlength=0, width=_quiver_width)
     #     qk1 = ax.quiverkey(Q1, _quiverkey_loc[0], _quiverkey_loc[1], 50, "50 mm/yr", coordinates='figure', color='k', 
     #                        zorder=10)
     #     # adding patch around quiverkey
@@ -1042,13 +1085,17 @@ def plot_field_data(_layer_coords='', _layer_data='', _ldata_freq='', _layer_vel
     if _cb_save: # vertical colorbar
         plt.figure(figsize=_figsize_cb)
         plt.rc('font', size=primary_fs) # font_size
-        if len(_cb_bounds)!=0:
-            a = np.array([bounds])
-            img = plt.imshow(a, cmap=_colormap, norm=norm)
-        else:
-            a = np.array([[_vmin,_vmax]])
-            img = plt.imshow(a, cmap=_colormap)
-            
+        
+        # if len(_cb_bounds)!=0:
+        #     a = np.array([bounds])
+        #     img = plt.imshow(a, cmap=_colormap, norm=norm)
+        # else:
+        #     a = np.array([[_vmin,_vmax]])
+        #     img = plt.imshow(a, cmap=_colormap)
+        
+        a = np.array([[_vmin,_vmax]])
+        img = plt.imshow(a, cmap=cbar)  
+        
         plt.gca().set_visible(False)
         if _cb_orient=='vertical':
             cax = plt.axes([0.1, 0.2, 0.06, 1.15])
@@ -1173,5 +1220,184 @@ plot_field_data(_p_lat=p_lat, _p_lon=p_lon, _ax_set_extent=ax_extent_rot, _rotat
                 _lvec_color=resampled_mesh['style_color'][inside_poly], _lvec_scale=50, 
                 _parameter=parameter, _parameter_patch_loc=parameter_patch_loc, _par_color='C2')
 
+# +
+# backarc earthquake data
+backarc_df = pd.read_csv('./p_axis_data_jc/sum_backarc_200_400.csv', delimiter=',')
+backarc_df = backarc_df[backarc_df['EQ_TYPE'] != 'ODD'].reset_index(drop=True)
+
+# Convert azimuth from degrees to radians
+backarc_azm_deg = backarc_df['P_AZM']
+backarc_azm_rad = np.deg2rad(backarc_azm_deg)
+p_axis_vec = np.stack((np.sin(backarc_azm_rad), np.cos(backarc_azm_rad)), axis=1)
+
+# Create RGB color array (float, 0–1) for each point
+eq_style_str = backarc_df['EQ_TYPE']
+N = backarc_df['EQ_TYPE'].shape[0]
+eq_colors = np.zeros((N, 3))  # shape (N, 3)
+
+for i in range(N):
+    s = eq_style_str[i]
+
+    if s=='THRUST':
+        eq_colors[i] = [0.0, 0.0, 1.0]   # Blue for Thrust
+    elif s=='NORM':
+        eq_colors[i] = [1.0, 0.0, 0.0]   # Red for Normal
+    else:
+        eq_colors[i] = [0.0, 0.4, 0.0]   # dark Green for Strike-slip
+# -
+
+
+# base plot
+plot_field_data(_p_lat=p_lat, _p_lon=p_lon, _ax_set_extent=ax_extent_rot, _rotated_crs=True,
+                _left_labels=left_labels, _bottom_labels=bottom_labels, _xlocator_mod=xlocator_mod,
+                _sum_trench_coords=sum_tcoords_orig, _trench_marker='square', _markerwidth=3, _tmarkersize=18, 
+                _sum_tcoords_option=1, _tlinewidth=4,
+                _contour_data=sum_slab_dep, _contour_levels=contour_levels, _contour_cmap=contour_cmap, _ctr_vmin=ctr_vmin, 
+                _ctr_vmax=ctr_vmax,
+                _output_path=output_dir, _fname=f'backarc_eq_p_axis', _fformat='pdf', 
+                _layer_coords=backarc_df[['LON', 'LAT']].to_numpy(), 
+                _layer_vel=p_axis_vec,
+                _lvec_color=eq_colors, _lvec_scale=25, _lvec_freq=1, _quiver_width=0.007)
+
+# +
+# forearc earthquake data
+forearc_df = pd.read_csv('./p_axis_data_jc/sum_forearc_0_200.csv', delimiter=',')
+forearc_df = forearc_df[forearc_df['EQ_TYPE'] != 'ODD'].reset_index(drop=True)
+
+# Convert azimuth from degrees to radians
+forearc_azm_deg = forearc_df['P_AZM']
+forearc_azm_rad = np.deg2rad(forearc_azm_deg)
+p_axis_vec = np.stack((np.sin(forearc_azm_rad), np.cos(forearc_azm_rad)), axis=1)
+
+# Create RGB color array (float, 0–1) for each point
+eq_style_str = forearc_df['EQ_TYPE']
+N = forearc_df['EQ_TYPE'].shape[0]
+eq_colors = np.zeros((N, 3))  # shape (N, 3)
+
+for i in range(N):
+    s = eq_style_str[i]
+
+    if s=='THRUST':
+        eq_colors[i] = [0.0, 0.0, 1.0]   # Blue for Thrust
+    elif s=='NORM':
+        eq_colors[i] = [1.0, 0.0, 0.0]   # Red for Normal
+    else:
+        eq_colors[i] = [0.0, 0.4, 0.0]   # dark Green for Strike-slip
+# -
+
+# base plot
+plot_field_data(_p_lat=p_lat, _p_lon=p_lon, _ax_set_extent=ax_extent_rot, _rotated_crs=True,
+                _left_labels=left_labels, _bottom_labels=bottom_labels, _xlocator_mod=xlocator_mod,
+                _sum_trench_coords=sum_tcoords_orig, _trench_marker='square', _markerwidth=3, _tmarkersize=18, 
+                _sum_tcoords_option=1, _tlinewidth=4,
+                _contour_data=sum_slab_dep, _contour_levels=contour_levels, _contour_cmap=contour_cmap, _ctr_vmin=ctr_vmin, 
+                _ctr_vmax=ctr_vmax,
+                _output_path=output_dir, _fname=f'forearc_eq_p_axis', _fformat='pdf', 
+                _layer_coords=forearc_df[['LON', 'LAT']].to_numpy(), 
+                _layer_vel=p_axis_vec,
+                _lvec_color=eq_colors, _lvec_scale=25, _lvec_freq=1, _quiver_width=0.007)
+
+# +
+# backarc and forearc data
+combined_df = pd.concat([backarc_df, forearc_df], axis=0, ignore_index=True)
+
+# Convert azimuth from degrees to radians
+combined_azm_deg = combined_df['P_AZM']
+combined_azm_rad = np.deg2rad(combined_azm_deg)
+p_axis_vec = np.stack((np.sin(combined_azm_rad), np.cos(combined_azm_rad)), axis=1)
+
+# Create RGB color array (float, 0–1) for each point
+eq_style_str = combined_df['EQ_TYPE']
+N = combined_df['EQ_TYPE'].shape[0]
+eq_colors = np.zeros((N, 3))  # shape (N, 3)
+
+for i in range(N):
+    s = eq_style_str[i]
+
+    if s=='THRUST':
+        eq_colors[i] = [0.0, 0.0, 1.0]   # Blue for Thrust
+    elif s=='NORM':
+        eq_colors[i] = [1.0, 0.0, 0.0]   # Red for Normal
+    else:
+        eq_colors[i] = [0.0, 0.4, 0.0]   # dark Green for Strike-slip
+# -
+
+# base plot
+plot_field_data(_p_lat=p_lat, _p_lon=p_lon, _ax_set_extent=ax_extent_rot, _rotated_crs=True,
+                _left_labels=left_labels, _bottom_labels=bottom_labels, _xlocator_mod=xlocator_mod,
+                _sum_trench_coords=sum_tcoords_orig, _trench_marker='square', _markerwidth=3, _tmarkersize=18, 
+                _sum_tcoords_option=1, _tlinewidth=4,
+                _contour_data=sum_slab_dep, _contour_levels=contour_levels, _contour_cmap=contour_cmap, _ctr_vmin=ctr_vmin, 
+                _ctr_vmax=ctr_vmax,
+                _output_path=output_dir, _fname=f'combined_eq_p_axis', _fformat='pdf', 
+                _layer_coords=combined_df[['LON', 'LAT']].to_numpy(), 
+                _layer_vel=p_axis_vec,
+                _lvec_color=eq_colors, _lvec_scale=25, _lvec_freq=1, _quiver_width=0.007)
+
+# +
+# Convert source and query data to numpy arrays
+surface_mesh_geo_lld = np.round(tc.uw_xyz2geo_lonlatr(surface_mesh.points), decimals=2)
+source_points = np.round(rotate_arr(surface_mesh_geo_lld[:,0:2], rotate_angle, tc)[:,0:2], decimals=2)
+query_points = combined_df[['LON', 'LAT']].to_numpy()
+
+# Build KDTree from source points
+tree = KDTree(source_points)
+
+# Query the closest point in the source data for each point in the query set
+distances, indices = tree.query(query_points)
+# -
+
+# base plot
+plot_field_data(_p_lat=p_lat, _p_lon=p_lon, _ax_set_extent=ax_extent_rot, _rotated_crs=True,
+                _left_labels=left_labels, _bottom_labels=bottom_labels, _xlocator_mod=xlocator_mod,
+                _sum_trench_coords=sum_tcoords_orig, _trench_marker='square', _markerwidth=3, _tmarkersize=18, 
+                _sum_tcoords_option=1, _tlinewidth=4,
+                _contour_data=sum_slab_dep, _contour_levels=contour_levels, _contour_cmap=contour_cmap, _ctr_vmin=ctr_vmin, 
+                _ctr_vmax=ctr_vmax,
+                _output_path=output_dir, _fname=f'model3c_surf_close_eq_data', _fformat='pdf', 
+                _layer_coords=source_points[indices][:,0:2], 
+                _layer_vel=rotate_vec_arr(surface_mesh['SHmax'][indices][:,0:2], rotate_angle), 
+                _lvec_color=surface_mesh['style_color'][indices], _lvec_scale=25, _lvec_freq=1, _quiver_width=0.007)
+
+# +
+# calculate angle between model and observed p axis
+v1 = p_axis_vec
+v2 = rotate_vec_arr(surface_mesh['SHmax'][indices][:, 0:2], rotate_angle)  # rotated vectors
+
+# Normalize both vectors
+v1_norm = v1 / np.linalg.norm(v1, axis=1, keepdims=True)
+v2_norm = v2 / np.linalg.norm(v2, axis=1, keepdims=True)
+
+# Compute dot product and clamp to avoid floating point errors
+dot_prod = np.einsum('ij,ij->i', v1_norm, v2_norm)
+dot_prod = np.clip(dot_prod, -1.0, 1.0)
+
+# Compute angle in radians, then convert to degrees
+angles_rad = np.arccos(dot_prod)
+angles_deg = np.degrees(angles_rad)
+
+print(angles_deg.min(), angles_deg.max())
+# -
+
+# parameter
+parameter_patch_loc=[0.41, 0.02]
+parameter = f'Mean angular misfit={np.round(np.mean(angles_deg), 1)}{chr(176)}'
+
+# base plot
+plot_field_data(_p_lat=p_lat, _p_lon=p_lon, _ax_set_extent=ax_extent_rot, _rotated_crs=True,
+                _left_labels=left_labels, _bottom_labels=bottom_labels, _xlocator_mod=xlocator_mod,
+                _sum_trench_coords=sum_tcoords_orig, _trench_marker='square', _markerwidth=3, _tmarkersize=18, 
+                _sum_tcoords_option=1, _tlinewidth=4,
+                _contour_data=sum_slab_dep, _contour_levels=contour_levels, _contour_cmap=contour_cmap, _ctr_vmin=ctr_vmin, 
+                _ctr_vmax=ctr_vmax,
+                _output_path=output_dir, _fname=f'arc_eq_p_axis_with_error_angle', _fformat='pdf', 
+                _layer_coords=combined_df[['LON', 'LAT']].to_numpy(), 
+                _layer_vel=p_axis_vec,
+                _lvec_color=eq_colors, _lvec_scale=25, _lvec_freq=1, _quiver_width=0.007,
+                _angle_data=angles_deg, _lvec_cb=cm.hawaii.resampled(36), _vmin=0, _vmax=180, 
+                _model_vel=rotate_vec_arr(surface_mesh['SHmax'][indices][:,0:2], rotate_angle), 
+                _parameter=parameter, _parameter_patch_loc=parameter_patch_loc, _par_color='k')
+
+output_dir
 
 

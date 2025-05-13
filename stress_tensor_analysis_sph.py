@@ -223,6 +223,13 @@ def compute_tectonic_style_str(stress_comps):
     return tectonic_style_str
 
 
+for i in range(5):    
+    G = -build_tensor(surface_stress_comps[i])
+    print('------------------------------')
+    print(G)
+
+-0.00164348+-0.00166709+0.00155412
+
 # calculate eigen values and vectors
 for i in range(N):    
     G = -build_tensor(surface_stress_comps[i])[:dim, :dim] # Reshape the 9-component gradient into a 3x3 matrix

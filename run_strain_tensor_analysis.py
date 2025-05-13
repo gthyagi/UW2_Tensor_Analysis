@@ -6,7 +6,7 @@ import shutil
 # +
 # run strain tensor analysis
 
-slice_depth_list = [0.0, -4.0, -8.0]
+slice_depth_list = [-8.0]
 # Ensure the main directory exists
 if os.path.isdir('hany_models'):
     # Iterate over subdirectories
@@ -56,9 +56,37 @@ def copy_folder_and_remove_h5(src_folder, dest_folder):
                 print(f"Deleted: {file_path}")
 
 
+def copy_files_with_minus8(src_folder, dest_folder):
+    """
+    Copy only files with '_-8' in their basename from src_folder into dest_folder,
+    preserving the directory tree.
+    """
+    # If the destination folder exists, remove it first
+    if os.path.exists(dest_folder):
+        shutil.rmtree(dest_folder)
+
+    # Walk source tree
+    for root, dirs, files in os.walk(src_folder):
+        # Compute path relative to src_folder
+        rel_dir = os.path.relpath(root, src_folder)
+        # Prepare corresponding destination directory
+        dest_dir = os.path.join(dest_folder, rel_dir)
+        os.makedirs(dest_dir, exist_ok=True)
+
+        # Copy only files matching *_-8*
+        for fname in files:
+            if "_-8" in fname:
+                src_path = os.path.join(root, fname)
+                dest_path = os.path.join(dest_dir, fname)
+                shutil.copy2(src_path, dest_path)
+                print(f"Copied: {src_path} -> {dest_path}")
+
+
+
 # Example usage:
 src = "./hany_models"   # Replace with your source folder path
 dest = "./hany_models_cp"  # Replace with your destination folder path
-copy_folder_and_remove_h5(src, dest)
+# copy_folder_and_remove_h5(src, dest)
+copy_files_with_minus8(src, dest)
 
 

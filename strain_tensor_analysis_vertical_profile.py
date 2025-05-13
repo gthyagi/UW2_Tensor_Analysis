@@ -11,6 +11,7 @@ from cmcrameri import cm
 from PIL import Image
 from scipy.interpolate import griddata
 import argparse
+from scipy.spatial import cKDTree
 
 # +
 # # Create the parser and define arguments with default values.
@@ -54,7 +55,7 @@ parser = argparse.ArgumentParser(
 parser.add_argument(
     "--input_dir",
     type=str,
-    default="./hany_models/trans/",
+    default="./hany_models/oblique/",
     help="Path to the input directory (default: './hany_models/trans/')"
 )
 parser.add_argument(
@@ -66,7 +67,7 @@ parser.add_argument(
 parser.add_argument(
     "--vel_file_no",
     type=int,
-    default=18,
+    default=6,
     help="Velocity file number (default: 6)"
 )
 
@@ -89,7 +90,7 @@ print("Velocity file number:", vel_file_no)
 # vel_file_no = 6
 
 output_dir = input_dir
-compute_eigen_3d = False
+compute_eigen_3d = True
 
 if compute_eigen_3d:
     analy_space = '3d'
@@ -122,7 +123,11 @@ with h5py.File(f'{input_dir}velocityField-{vel_file_no}.h5', 'r') as f:
 mesh.point_data['velocity'] = velocity*3.17e-10/1000 # convert cm/yr to m/s
 
 # # plot velocity magnitude
-# mesh.plot(scalars='velocity', clim=[0, 5], cmap=plt.cm.viridis.resampled(12))
+vel_mag = np.linalg.norm(mesh.point_data['velocity'], axis=1)
+mesh.point_data['vel_mag'] = vel_mag/(3.17e-10/1000)
+# c_min = mesh.point_data['vel_mag'].min()
+# c_max = mesh.point_data['vel_mag'].max()
+# mesh.plot(scalars='vel_mag', clim=[c_min, c_max], cmap=plt.cm.viridis.resampled(12))
 # -
 
 # $$
@@ -280,27 +285,134 @@ else:
 mesh['style'] = tectonic_style
 
 # +
-# # plotting largest eigen value
-# print(mesh["principal_strain_1"].min(), mesh["principal_strain_1"].max())
+# plotting largest eigen value
+print(mesh["principal_strain_1"].min(), mesh["principal_strain_1"].max())
 
-# p = pv.Plotter()
-# p.add_mesh(mesh, scalars="principal_strain_1", cmap=plt.cm.coolwarm.resampled(10), 
-#            show_edges=False, clim=[-1e-14, 1e-14])
-# p.show()
+p = pv.Plotter()
+p.add_mesh(mesh, scalars="principal_strain_1", cmap=plt.cm.coolwarm.resampled(10), 
+           show_edges=False, clim=[-1e-14, 1e-14])
+p.show()
 
 # +
 # # plotting eigen vectors, need 3d array/vectors
 # glyph1 = mesh.glyph(orient="principal_dir_1", scale=True, factor=50)
 # glyph2 = mesh.glyph(orient="principal_dir_2", scale=True, factor=50)
-# # glyph3 = mesh.glyph(orient="principal_dir_3", scale=True, factor=50)
+# glyph3 = mesh.glyph(orient="principal_dir_3", scale=True, factor=50)
 
 # p = pv.Plotter()
 # # p.add_mesh(vel_derivs, scalars="principal_strain_1", cmap=plt.cm.coolwarm.resampled(10), show_edges=False, clim=[-0.1, 0.1])
 # p.add_mesh(glyph1, color="black")
 # p.add_mesh(glyph2, color="blue")
-# # p.add_mesh(glyph3, color="green")
+# p.add_mesh(glyph3, color="green")
 # p.show()
+
+# +
+# reading boundaries data
+with h5py.File(f'{input_dir}Surface-{vel_file_no}.h5', 'r') as f:
+    surface_coords = f['data'][:]
+
+with h5py.File(f'{input_dir}BD-{vel_file_no}.h5', 'r') as f:
+    bd_coords = f['data'][:]
+
+with h5py.File(f'{input_dir}Moho-{vel_file_no}.h5', 'r') as f:
+    moho_coords = f['data'][:]
+
+with h5py.File(f'{input_dir}Litho-{vel_file_no}.h5', 'r') as f:
+    litho_coords = f['data'][:]
+
+# +
+# Define the slicing plane by its normal (along the y-axis) and an origin on that plane
+slice_y_coord = 256.0
+slice_y = mesh.slice(normal='y', origin=(0.0, slice_y_coord, 0.0))
+
+print(slice_y["dilatation"].min(), slice_y["dilatation"].max())
 # -
+
+# get slice xy coords
+x_coords = np.unique(slice_y.points[:, 0])
+y_coords = np.full(x_coords.shape, slice_y_coord)
+slice_xy = np.column_stack((x_coords, y_coords))
+
+
+def sample_z_at_slice(coords, slice_xy):
+    """
+    Given coords of shape (M,3) and slice_xy of shape (N,2),
+    returns an (N,3) array whose columns are [x, y, z_nearest].
+    """
+    # build the tree on (x,y)
+    tree = cKDTree(coords[:, :2])
+    # find nearest surface point for each slice point
+    _, idx = tree.query(slice_xy)
+    # pull out the z values
+    z = coords[idx, 2]
+    # combine back into (x, y, z)
+    return np.column_stack((slice_xy, z))
+
+
+# +
+# your four coordinate arrays (M×3 each)
+# surface_coords, bd_coords, moho_coords, litho_coords = ...
+
+slice_surface = sample_z_at_slice(surface_coords, slice_xy)
+slice_bd      = sample_z_at_slice(bd_coords,     slice_xy)
+slice_moho    = sample_z_at_slice(moho_coords,   slice_xy)
+slice_litho   = sample_z_at_slice(litho_coords,  slice_xy)
+# -
+
+slice_y
+
+slice_y['velocity_xz'] = slice_y['velocity']
+slice_y['velocity_xz'][:,1] = 0.0
+slice_y['velocity_xz_mag'] = np.linalg.norm(slice_y['velocity_xz'], axis=1)
+
+# +
+# # Create glyphs on the slice
+# glyph1 = slice_y256.glyph(orient="principal_dir_1", scale=False, factor=5)
+# glyph2 = slice_y256.glyph(orient="principal_dir_2", scale=False, factor=5)
+# glyph3 = slice_y256.glyph(orient="principal_dir_3", scale=False, factor=5)
+
+arrow_glyphs = slice_y.glyph(orient='velocity_xz', scale=True, factor=5, )
+
+# Set up the Plotter
+p = pv.Plotter()
+
+# Add the slice itself, optionally colored by a scalar
+p.add_mesh(
+    slice_y,
+    scalars="vel_mag",
+    cmap=plt.cm.viridis.resampled(20),
+    show_edges=False,
+    clim=[0, 2],
+    opacity=1.0
+)
+
+# boundary profile line
+p.add_lines(slice_surface, color="k", width=1, connected=True)
+p.add_lines(slice_bd, color="k", width=1, connected=True)
+p.add_lines(slice_moho, color="k", width=1, connected=True)
+p.add_lines(slice_litho, color="k", width=1, connected=True)
+
+# Overlay the velocity arrows
+p.add_mesh(arrow_glyphs, color='k',)
+
+# # Overlay the three glyphs
+# p.add_mesh(glyph1, color="black", label="Dir 1")
+# p.add_mesh(glyph2, color="blue",  label="Dir 2")
+# p.add_mesh(glyph3, color="green", label="Dir 3")
+# p.add_legend(bcolor='w')
+
+# Display
+p.show(cpos='xz')
+
+# -
+
+slice_y
+
+0/0
+
+
+
+
 
 # This creates a plane normal to the z-axis at z = slice_depth
 plane = pv.Plane(center=(0, 0, slice_depth), direction=(0, 0, 1),
